@@ -195,8 +195,38 @@ export interface IntegrationStatus {
   supabaseTablesReady: boolean;
   supabaseMissingTables: string[];
   gasDriveConfigured: boolean;
+  gasDriveWebappUrl: string | null;
   gasFolderId: string | null;
+  gasSecretConfigured: boolean;
+  gasConfigSource: 'admin_panel' | 'env' | 'none';
   storageMode: 'supabase' | 'local_persistent';
+}
+
+export interface SupabaseTableCheck {
+  table: string;
+  ok: boolean;
+  rowCount: number | null;
+  error?: string;
+}
+
+export interface SupabaseTestResult {
+  configured: boolean;
+  connected: boolean;
+  tablesReady: boolean;
+  latencyMs: number;
+  projectHost: string | null;
+  tables: SupabaseTableCheck[];
+  error: string | null;
+}
+
+export interface GasTestResult {
+  configured: boolean;
+  reachable: boolean;
+  latencyMs: number;
+  webappUrl: string | null;
+  folderId: string | null;
+  fileCount: number | null;
+  error: string | null;
 }
 
 export interface SiteSettings {

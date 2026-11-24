@@ -130,14 +130,28 @@ CREATE TABLE IF NOT EXISTS public.site_settings (
   logo_url TEXT NOT NULL DEFAULT '',
   background_image_url TEXT NOT NULL DEFAULT '',
   show_quick_demo BOOLEAN NOT NULL DEFAULT false,
+  gas_webapp_url TEXT NOT NULL DEFAULT '',
+  gas_folder_id TEXT NOT NULL DEFAULT '',
+  gas_api_secret TEXT NOT NULL DEFAULT '',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE public.site_settings ADD COLUMN IF NOT EXISTS gas_webapp_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.site_settings ADD COLUMN IF NOT EXISTS gas_folder_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.site_settings ADD COLUMN IF NOT EXISTS gas_api_secret TEXT NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS idx_questions_assessment ON public.questions(assessment_id);
 CREATE INDEX IF NOT EXISTS idx_assessments_teacher ON public.assessments(assigned_teacher_id);
 CREATE INDEX IF NOT EXISTS idx_submissions_assessment ON public.submissions(assessment_id);
 CREATE INDEX IF NOT EXISTS idx_submissions_student ON public.submissions(student_nisn);
 CREATE INDEX IF NOT EXISTS idx_logs_assessment ON public.anti_cheat_logs(assessment_id);
+
+-- Pastikan role backend (service_role / SUPABASE_SECRET_KEY) memiliki izin penuh ke seluruh tabel
+GRANT USAGE ON SCHEMA public TO service_role;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO service_role;
 `;
 
 export const GOOGLE_APPS_SCRIPT_CODE = `/**

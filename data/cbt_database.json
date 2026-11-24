@@ -28,5 +28,10 @@
     "backgroundImageUrl": "/src/assets/images/madrasah_campus_hero_1794802017792.jpg",
     "showQuickDemo": false,
     "updatedAt": "2026-11-23T00:00:00.000Z"
+  },
+  "gasConfig": {
+    "webappUrl": "",
+    "folderId": "",
+    "secret": ""
   }
 }

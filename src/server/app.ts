@@ -14,6 +14,7 @@ import {
   deleteStaffById,
   deleteStudentById,
   getDetailedIntegrationStatus,
+  getGasConfig,
   getIntegrationStatus,
   getSiteSettings,
   getSubmissionById,
@@ -23,8 +24,10 @@ import {
   markSubmissionsBackedUpBatch,
   removeDriveAsset,
   saveDriveAsset,
+  saveGasConfig,
   saveSiteSettings,
   saveSubmission,
+  testSupabaseConnection,
   upsertAssessment,
   upsertQuestion,
   upsertQuestionsBatch,
@@ -53,6 +56,7 @@ import type {
   AntiCheatLog,
   Assessment,
   DriveAsset,
+  GasTestResult,
   Question,
   SafeQuestion,
   SessionUser,
@@ -235,8 +239,9 @@ async function uploadMediaToDriveAndLocal(params: {
     createdAt: new Date().toISOString(),
   };
 
-  const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
-  const gasSecret = (process.env.GAS_API_SECRET || '').trim();
+  const gasCfg = await getGasConfig();
+  const gasUrl = gasCfg.webappUrl;
+  const gasSecret = gasCfg.secret;
   const gasConfigured = Boolean(gasUrl);
   let gasSynced = false;
 
@@ -401,45 +406,195 @@ export function createApiApp(): express.Express {
     }
   });
 
-  app.post('/api/integrations/test', requireRoles('admin'), async (_req, res) => {
+  app.put('/api/integrations/gas', requireRoles('admin'), async (req, res) => {
     try {
-      const status = await getDetailedIntegrationStatus();
-      const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
-      const gasSecret = (process.env.GAS_API_SECRET || '').trim();
-      let gasReachable = false;
-      let gasFolderId: string | null = status.gasFolderId;
-      let gasError: string | null = null;
+      const { webappUrl, folderId, secret, clearSecret, resetToEnv } = req.body as {
+        webappUrl?: string;
+        folderId?: string;
+        secret?: string;
+        clearSecret?: boolean;
+        resetToEnv?: boolean;
+      };
 
-      if (gasUrl) {
+      const trimmedUrl = typeof webappUrl === 'string' ? webappUrl.trim() : undefined;
+      if (trimmedUrl) {
+        let validHttps = false;
         try {
-          const url = new URL(gasUrl);
-          url.searchParams.set('action', 'list');
-          if (gasSecret) url.searchParams.set('secret', gasSecret);
-          const response = await fetch(url.toString());
-          if (response.ok) {
-            const json = await safeParseJson<{
-              ok?: boolean;
-              folderId?: string;
-              error?: string;
-            }>(response);
-            if (json?.ok) {
-              gasReachable = true;
-              if (json.folderId) gasFolderId = json.folderId;
-            } else {
-              gasError = json?.error || 'Respons GAS tidak valid.';
-            }
-          } else {
-            gasError = `HTTP ${response.status}`;
-          }
-        } catch (err) {
-          gasError = err instanceof Error ? err.message : 'Gagal menghubungi GAS WebApp.';
+          const parsed = new URL(trimmedUrl);
+          validHttps = parsed.protocol === 'https:';
+        } catch {
+          validHttps = false;
+        }
+        if (!validHttps) {
+          return res.status(400).json({
+            error: 'URL WebApp Google Apps Script harus berupa alamat https:// yang valid (biasanya berakhiran /exec).',
+          });
         }
       }
 
+      const saved = await saveGasConfig({
+        webappUrl: trimmedUrl,
+        folderId: typeof folderId === 'string' ? folderId.trim() : undefined,
+        secret: typeof secret === 'string' ? secret.trim() : undefined,
+        clearSecret: Boolean(clearSecret),
+        resetToEnv: Boolean(resetToEnv),
+      });
+      invalidateGasListCache();
+      const status = await getDetailedIntegrationStatus();
       res.json({
-        status: { ...status, gasFolderId },
-        gasReachable,
-        gasError,
+        ok: true,
+        status,
+        savedToSupabase: saved.savedToSupabase,
+        warning: saved.warning || null,
+      });
+    } catch (err) {
+      console.error('Save GAS config error:', err);
+      res.status(500).json({ error: 'Gagal menyimpan pengaturan Google Apps Script.' });
+    }
+  });
+
+  app.post('/api/integrations/test-supabase', requireRoles('admin'), async (_req, res) => {
+    try {
+      const result = await testSupabaseConnection();
+      const status = await getDetailedIntegrationStatus();
+      res.json({ result, status });
+    } catch {
+      res.status(500).json({ error: 'Gagal menguji koneksi Supabase.' });
+    }
+  });
+
+  const runGasCheck = async (override?: {
+    webappUrl?: string;
+    secret?: string;
+  }): Promise<GasTestResult> => {
+    const started = Date.now();
+    const cfg = await getGasConfig({ forceFresh: true });
+    const gasUrl = (override?.webappUrl !== undefined ? override.webappUrl : cfg.webappUrl).trim();
+    const gasSecret = (
+      override?.secret !== undefined && override.secret.trim().length > 0
+        ? override.secret
+        : cfg.secret
+    ).trim();
+
+    if (!gasUrl) {
+      return {
+        configured: false,
+        reachable: false,
+        latencyMs: Date.now() - started,
+        webappUrl: null,
+        folderId: cfg.folderId || null,
+        fileCount: null,
+        error: 'URL WebApp Google Apps Script belum diisi.',
+      };
+    }
+
+    try {
+      const url = new URL(gasUrl);
+      if (url.protocol !== 'https:') {
+        return {
+          configured: true,
+          reachable: false,
+          latencyMs: Date.now() - started,
+          webappUrl: gasUrl,
+          folderId: cfg.folderId || null,
+          fileCount: null,
+          error: 'URL WebApp GAS wajib menggunakan protokol https://.',
+        };
+      }
+      url.searchParams.set('action', 'list');
+      if (gasSecret) url.searchParams.set('secret', gasSecret);
+      const response = await fetch(url.toString());
+      const latencyMs = Date.now() - started;
+
+      if (!response.ok) {
+        return {
+          configured: true,
+          reachable: false,
+          latencyMs,
+          webappUrl: gasUrl,
+          folderId: cfg.folderId || null,
+          fileCount: null,
+          error: `HTTP ${response.status} dari server Google Apps Script.`,
+        };
+      }
+
+      const json = await safeParseJson<{
+        ok?: boolean;
+        folderId?: string;
+        files?: DriveAsset[];
+        error?: string;
+      }>(response);
+
+      if (!json?.ok) {
+        return {
+          configured: true,
+          reachable: false,
+          latencyMs,
+          webappUrl: gasUrl,
+          folderId: cfg.folderId || null,
+          fileCount: null,
+          error:
+            json?.error === 'Unauthorized secret'
+              ? 'Unauthorized secret: GAS API Secret tidak cocok dengan SHARED_SECRET di Code.gs.'
+              : json?.error || 'Respons GAS bukan JSON yang valid. Pastikan WebApp di-deploy dengan akses "Anyone".',
+        };
+      }
+
+      return {
+        configured: true,
+        reachable: true,
+        latencyMs,
+        webappUrl: gasUrl,
+        folderId: json.folderId || cfg.folderId || null,
+        fileCount: Array.isArray(json.files) ? json.files.length : 0,
+        error: null,
+      };
+    } catch (err) {
+      return {
+        configured: true,
+        reachable: false,
+        latencyMs: Date.now() - started,
+        webappUrl: gasUrl,
+        folderId: cfg.folderId || null,
+        fileCount: null,
+        error: err instanceof Error ? err.message : 'Gagal menghubungi WebApp Google Apps Script.',
+      };
+    }
+  };
+
+  app.post('/api/integrations/test-gas', requireRoles('admin'), async (req, res) => {
+    try {
+      const body = (req.body || {}) as { webappUrl?: string; secret?: string };
+      const result = await runGasCheck({
+        webappUrl: typeof body.webappUrl === 'string' ? body.webappUrl : undefined,
+        secret: typeof body.secret === 'string' ? body.secret : undefined,
+      });
+      const status = await getDetailedIntegrationStatus();
+      res.json({
+        result,
+        status: {
+          ...status,
+          gasFolderId: result.folderId || status.gasFolderId,
+        },
+      });
+    } catch {
+      res.status(500).json({ error: 'Gagal menguji koneksi Google Apps Script.' });
+    }
+  });
+
+  app.post('/api/integrations/test', requireRoles('admin'), async (_req, res) => {
+    try {
+      const [supabaseResult, gasResult] = await Promise.all([
+        testSupabaseConnection(),
+        runGasCheck(),
+      ]);
+      const status = await getDetailedIntegrationStatus();
+      res.json({
+        status: { ...status, gasFolderId: gasResult.folderId || status.gasFolderId },
+        supabaseResult,
+        gasResult,
+        gasReachable: gasResult.reachable,
+        gasError: gasResult.error,
       });
     } catch {
       res.status(500).json({ error: 'Gagal menguji koneksi integrasi.' });
@@ -1355,7 +1510,7 @@ export function createApiApp(): express.Express {
   // Role & User Account Management (Admin only)
   app.get('/api/users', requireRoles('admin'), async (_req, res) => {
     try {
-      const db = await loadDb();
+      const db = await loadDb({ forceFresh: true });
       res.json({
         students: db.students,
         staff: db.admins.map(({ password: _p, ...rest }) => rest),
@@ -1371,16 +1526,22 @@ export function createApiApp(): express.Express {
       if (!nisn || !name || !className || !pin) {
         return res.status(400).json({ error: 'NISN, nama lengkap, kelas, dan PIN wajib diisi.' });
       }
-      const saved = await addStudent({
+      const result = await addStudent({
         id: id || `stu-${Date.now()}`,
         nisn: String(nisn).trim(),
         name: String(name).trim(),
         className: String(className).trim(),
         pin: String(pin).trim(),
       });
-      res.json({ student: saved });
-    } catch {
-      res.status(500).json({ error: 'Gagal menyimpan akun peserta ujian.' });
+      res.json(result);
+    } catch (err) {
+      console.error('Save student error:', err);
+      res.status(500).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Gagal menyimpan akun peserta ujian.',
+      });
     }
   });
 
@@ -1437,8 +1598,9 @@ export function createApiApp(): express.Express {
   app.get('/api/drive/files', requireRoles('admin', 'guru'), async (req, res) => {
     try {
       const db = await loadDb();
-      const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
-      const gasSecret = (process.env.GAS_API_SECRET || '').trim();
+      const gasCfg = await getGasConfig();
+      const gasUrl = gasCfg.webappUrl;
+      const gasSecret = gasCfg.secret;
       const forceFresh = req.query.fresh === '1';
 
       let remoteFiles: DriveAsset[] = [];
@@ -1505,11 +1667,12 @@ export function createApiApp(): express.Express {
 
   app.post('/api/drive/sync-all', requireRoles('admin', 'guru'), async (_req, res) => {
     try {
-      const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
-      const gasSecret = (process.env.GAS_API_SECRET || '').trim();
+      const gasCfg = await getGasConfig();
+      const gasUrl = gasCfg.webappUrl;
+      const gasSecret = gasCfg.secret;
       if (!gasUrl) {
         return res.status(400).json({
-          error: 'GAS_DRIVE_WEBAPP_URL belum disetel di Secrets server.',
+          error: 'URL WebApp Google Apps Script belum disetel di pengaturan Admin atau Secrets.',
         });
       }
 
@@ -1610,8 +1773,9 @@ export function createApiApp(): express.Express {
         const csvContent = [header, ...rows].join('\n');
         const fileName = `Rekap_Nilai_CBT_Al_Ihsan_${new Date().toISOString().slice(0, 10)}.csv`;
 
-        const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
-        const gasSecret = (process.env.GAS_API_SECRET || '').trim();
+        const gasCfg = await getGasConfig();
+        const gasUrl = gasCfg.webappUrl;
+        const gasSecret = gasCfg.secret;
         let driveResult: { ok: boolean; driveFileId?: string; url?: string } = { ok: false };
 
         if (gasUrl) {
@@ -1681,8 +1845,9 @@ export function createApiApp(): express.Express {
     try {
       const db = await loadDb();
       const target = db.driveAssets.find((d) => d.id === req.params.id);
-      const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
-      const gasSecret = (process.env.GAS_API_SECRET || '').trim();
+      const gasCfg = await getGasConfig();
+      const gasUrl = gasCfg.webappUrl;
+      const gasSecret = gasCfg.secret;
 
       if (gasUrl && target?.driveFileId) {
         try {

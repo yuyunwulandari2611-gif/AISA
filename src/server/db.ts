@@ -12,7 +12,15 @@ import type {
   SiteSettings,
   StudentAccount,
   SubmissionRecord,
+  SupabaseTableCheck,
+  SupabaseTestResult,
 } from '../types/cbt.ts';
+
+export interface GasConfig {
+  webappUrl: string;
+  folderId: string;
+  secret: string;
+}
 
 export interface DatabaseSchema {
   assessments: Assessment[];
@@ -23,6 +31,7 @@ export interface DatabaseSchema {
   antiCheatLogs: AntiCheatLog[];
   driveAssets: DriveAsset[];
   siteSettings: SiteSettings;
+  gasConfig?: GasConfig;
 }
 
 export const DEFAULT_SITE_SETTINGS: SiteSettings = {
@@ -142,6 +151,13 @@ function ensureLocalStore(): DatabaseSchema {
     siteSettings: parsed.siteSettings
       ? { ...DEFAULT_SITE_SETTINGS, ...parsed.siteSettings, showQuickDemo: false }
       : { ...DEFAULT_SITE_SETTINGS },
+    gasConfig: parsed.gasConfig
+      ? {
+          webappUrl: String(parsed.gasConfig.webappUrl || '').trim(),
+          folderId: String(parsed.gasConfig.folderId || '').trim(),
+          secret: String(parsed.gasConfig.secret || '').trim(),
+        }
+      : undefined,
   };
   if (!normalized.admins.some((a) => a.role === 'admin')) {
     normalized.admins.unshift(createDefaultAdmin());
@@ -215,12 +231,166 @@ let inFlightSettingsLoad: Promise<SiteSettings> | null = null;
 // Track submission IDs whose full `graded_items` JSONB was already hydrated in RAM
 const hydratedSubmissionDetails = new Map<string, SubmissionRecord['gradedItems']>();
 
+let cachedGasConfig: GasConfig | null = null;
+let cachedGasConfigAt = 0;
+
 export function invalidateDbCache() {
   cachedDb = null;
   cachedDbAt = 0;
   cachedSettings = null;
   cachedSettingsAt = 0;
+  cachedGasConfig = null;
+  cachedGasConfigAt = 0;
   hydratedSubmissionDetails.clear();
+}
+
+export interface ResolvedGasConfig {
+  webappUrl: string;
+  folderId: string;
+  secret: string;
+  source: 'admin_panel' | 'env' | 'none';
+  secretConfigured: boolean;
+}
+
+export async function getGasConfig(options?: { forceFresh?: boolean }): Promise<ResolvedGasConfig> {
+  const envUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
+  const envFolder = (process.env.GAS_DRIVE_FOLDER_ID || '').trim();
+  const envSecret = (process.env.GAS_API_SECRET || '').trim();
+
+  let stored: GasConfig | null =
+    !options?.forceFresh && cachedGasConfig && isCacheFresh(cachedGasConfigAt, SETTINGS_CACHE_TTL_MS)
+      ? cachedGasConfig
+      : null;
+
+  if (!stored) {
+    const local = ensureLocalStore();
+    stored = local.gasConfig || null;
+
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const { data, error } = await sb
+          .from('site_settings')
+          .select('gas_webapp_url,gas_folder_id,gas_api_secret')
+          .eq('id', 'default')
+          .maybeSingle();
+        if (!error && data) {
+          stored = {
+            webappUrl: String(data.gas_webapp_url || '').trim(),
+            folderId: String(data.gas_folder_id || '').trim(),
+            secret: String(data.gas_api_secret || '').trim(),
+          };
+        }
+      } catch {
+        // Fallback to local store if gas_* columns aren't migrated yet
+      }
+    }
+
+    cachedGasConfig = stored || { webappUrl: '', folderId: '', secret: '' };
+    cachedGasConfigAt = Date.now();
+  }
+
+  const hasPanelUrl = Boolean(stored?.webappUrl);
+  const hasPanelFolder = Boolean(stored?.folderId);
+  const hasPanelSecret = Boolean(stored?.secret);
+
+  const webappUrl = stored?.webappUrl || envUrl;
+  const folderId = stored?.folderId || envFolder;
+  const secret = stored?.secret || envSecret;
+
+  const source: ResolvedGasConfig['source'] =
+    hasPanelUrl || hasPanelFolder || hasPanelSecret
+      ? 'admin_panel'
+      : webappUrl || folderId || secret
+        ? 'env'
+        : 'none';
+
+  return {
+    webappUrl,
+    folderId,
+    secret,
+    source,
+    secretConfigured: Boolean(secret),
+  };
+}
+
+export async function saveGasConfig(params: {
+  webappUrl?: string;
+  folderId?: string;
+  secret?: string;
+  clearSecret?: boolean;
+  resetToEnv?: boolean;
+}): Promise<{ config: ResolvedGasConfig; savedToSupabase: boolean; warning?: string }> {
+  const local = ensureLocalStore();
+  const currentResolved = await getGasConfig({ forceFresh: true });
+  const prevStored = local.gasConfig || { webappUrl: '', folderId: '', secret: '' };
+
+  let nextStored: GasConfig;
+  if (params.resetToEnv) {
+    nextStored = { webappUrl: '', folderId: '', secret: '' };
+  } else {
+    const nextUrl =
+      params.webappUrl !== undefined ? params.webappUrl.trim() : prevStored.webappUrl;
+    const nextFolder =
+      params.folderId !== undefined ? params.folderId.trim() : prevStored.folderId;
+    let nextSecret = prevStored.secret || currentResolved.secret;
+    if (params.clearSecret) {
+      nextSecret = '';
+    } else if (params.secret !== undefined && params.secret.trim().length > 0) {
+      nextSecret = params.secret.trim();
+    } else if (!prevStored.secret) {
+      nextSecret = '';
+    }
+    nextStored = {
+      webappUrl: nextUrl,
+      folderId: nextFolder,
+      secret: nextSecret,
+    };
+  }
+
+  local.gasConfig = nextStored;
+  saveLocalStore(local);
+  cachedGasConfig = nextStored;
+  cachedGasConfigAt = Date.now();
+
+  let savedToSupabase = false;
+  let warning: string | undefined;
+  const sb = getSupabase();
+  if (sb) {
+    try {
+      const settings = await getSiteSettings();
+      const { error } = await sb.from('site_settings').upsert({
+        id: 'default',
+        app_name: settings.appName,
+        school_name: settings.schoolName,
+        tagline: settings.tagline,
+        eyebrow_text: settings.eyebrowText,
+        hero_title: settings.heroTitle,
+        hero_subtitle: settings.heroSubtitle,
+        login_heading: settings.loginHeading,
+        logo_url: settings.logoUrl,
+        background_image_url: settings.backgroundImageUrl,
+        show_quick_demo: false,
+        gas_webapp_url: nextStored.webappUrl,
+        gas_folder_id: nextStored.folderId,
+        gas_api_secret: nextStored.secret,
+        updated_at: new Date().toISOString(),
+      });
+      if (error) {
+        warning = `Pengaturan GAS tersimpan sementara di server lokal, namun Supabase mengembalikan error: ${error.message}. Pastikan Skema SQL terbaru sudah dijalankan di Supabase SQL Editor.`;
+      } else {
+        savedToSupabase = true;
+      }
+    } catch (err) {
+      warning =
+        err instanceof Error
+          ? err.message
+          : 'Gagal menyimpan konfigurasi GAS ke tabel site_settings Supabase.';
+    }
+  }
+
+  const resolved = await getGasConfig({ forceFresh: true });
+  return { config: resolved, savedToSupabase, warning };
 }
 
 export function getIntegrationStatus(): IntegrationStatus {
@@ -228,8 +398,9 @@ export function getIntegrationStatus(): IntegrationStatus {
   const supabaseKey = getSupabaseSecretKey();
   const supabasePublishable = (process.env.SUPABASE_PUBLISHABLE_KEY || '').trim();
   const supabaseJwksUrl = (process.env.SUPABASE_JWKS_URL || '').trim();
-  const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
-  const gasFolder = (process.env.GAS_DRIVE_FOLDER_ID || '').trim();
+  const gasUrl = (cachedGasConfig?.webappUrl || process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
+  const gasFolder = (cachedGasConfig?.folderId || process.env.GAS_DRIVE_FOLDER_ID || '').trim();
+  const gasSecret = (cachedGasConfig?.secret || process.env.GAS_API_SECRET || '').trim();
 
   let host: string | null = null;
   if (supabaseUrl) {
@@ -249,16 +420,126 @@ export function getIntegrationStatus(): IntegrationStatus {
     supabaseTablesReady: false,
     supabaseMissingTables: [],
     gasDriveConfigured: Boolean(gasUrl),
+    gasDriveWebappUrl: gasUrl || null,
     gasFolderId: gasFolder || null,
+    gasSecretConfigured: Boolean(gasSecret),
+    gasConfigSource:
+      cachedGasConfig?.webappUrl || cachedGasConfig?.folderId || cachedGasConfig?.secret
+        ? 'admin_panel'
+        : gasUrl || gasFolder || gasSecret
+          ? 'env'
+          : 'none',
     storageMode: supabaseConfigured ? 'supabase' : 'local_persistent',
   };
 }
 
-export async function getDetailedIntegrationStatus(): Promise<IntegrationStatus> {
+export async function testSupabaseConnection(): Promise<SupabaseTestResult> {
+  const started = Date.now();
   const base = getIntegrationStatus();
   const sb = getSupabase();
+  const rawKey = getSupabaseSecretKey();
+
   if (!sb) {
-    return base;
+    return {
+      configured: false,
+      connected: false,
+      tablesReady: false,
+      latencyMs: Date.now() - started,
+      projectHost: base.supabaseProjectHost,
+      tables: [],
+      error:
+        'SUPABASE_URL atau SUPABASE_SECRET_KEY (atau SUPABASE_SERVICE_ROLE_KEY) belum disetel pada environment server.',
+    };
+  }
+
+  const tables: SupabaseTableCheck[] = await Promise.all(
+    EXPECTED_SUPABASE_TABLES.map(async (table) => {
+      try {
+        const { count, error } = await sb
+          .from(table)
+          .select('*', { count: 'exact' })
+          .limit(1);
+        if (error) {
+          return {
+            table,
+            ok: false,
+            rowCount: null,
+            error: error.message || `Gagal mengakses tabel ${table}`,
+          };
+        }
+        return {
+          table,
+          ok: true,
+          rowCount: typeof count === 'number' ? count : 0,
+        };
+      } catch (err) {
+        return {
+          table,
+          ok: false,
+          rowCount: null,
+          error: err instanceof Error ? err.message : 'Gagal mengakses tabel.',
+        };
+      }
+    })
+  );
+
+  const latencyMs = Date.now() - started;
+  const anyOk = tables.some((t) => t.ok);
+  const failed = tables.filter((t) => !t.ok);
+  const firstErr = failed[0]?.error || null;
+  const hasPermissionError = failed.some((t) =>
+    /permission denied|row-level security|not allowed|insufficient_privilege/i.test(t.error || '')
+  );
+  const missingOnly = failed.filter((t) =>
+    /could not find the table|relation .* does not exist|schema cache/i.test(t.error || '')
+  );
+  const isWrongKeyPrefix = rawKey.startsWith('sb_publishable_');
+  const isAuthOrNetworkError =
+    !anyOk &&
+    Boolean(
+      firstErr &&
+        /invalid api key|jwt|unauthorized|fetch failed|enotfound|econnrefused/i.test(firstErr)
+    );
+
+  let errorSummary: string | null = null;
+  if (isWrongKeyPrefix) {
+    errorSummary =
+      'Kunci Supabase yang terpasang adalah Publishable Key (sb_publishable_...). Server membutuhkan SUPABASE_SECRET_KEY (sb_secret_...) atau SUPABASE_SERVICE_ROLE_KEY.';
+  } else if (isAuthOrNetworkError) {
+    errorSummary = firstErr;
+  } else if (hasPermissionError) {
+    errorSummary = `Koneksi ke host Supabase berhasil, namun akses ditolak (permission denied). Jalankan ulang Skema SQL terbaru (termasuk perintah GRANT service_role) di Supabase Dashboard -> SQL Editor, lalu periksa SUPABASE_SECRET_KEY / SUPABASE_SERVICE_ROLE_KEY.`;
+  } else if (failed.length > 0) {
+    const names = (missingOnly.length > 0 ? missingOnly : failed).map((m) => m.table).join(', ');
+    errorSummary = `${failed.length} tabel bermasalah/belum tersedia (${names}). Jalankan Skema SQL di Supabase SQL Editor.`;
+  }
+
+  return {
+    configured: true,
+    connected: !isAuthOrNetworkError,
+    tablesReady: failed.length === 0,
+    latencyMs,
+    projectHost: base.supabaseProjectHost,
+    tables,
+    error: errorSummary,
+  };
+}
+
+export async function getDetailedIntegrationStatus(): Promise<IntegrationStatus> {
+  const gasCfg = await getGasConfig({ forceFresh: true });
+  const base = getIntegrationStatus();
+  const baseWithGas: IntegrationStatus = {
+    ...base,
+    gasDriveConfigured: Boolean(gasCfg.webappUrl),
+    gasDriveWebappUrl: gasCfg.webappUrl || null,
+    gasFolderId: gasCfg.folderId || null,
+    gasSecretConfigured: gasCfg.secretConfigured,
+    gasConfigSource: gasCfg.source,
+  };
+
+  const sb = getSupabase();
+  if (!sb) {
+    return baseWithGas;
   }
 
   const missingTables: string[] = [];
@@ -276,7 +557,7 @@ export async function getDetailedIntegrationStatus(): Promise<IntegrationStatus>
   );
 
   return {
-    ...base,
+    ...baseWithGas,
     supabaseTablesReady: missingTables.length === 0,
     supabaseMissingTables: missingTables.sort(),
   };
@@ -889,30 +1170,73 @@ export async function appendAntiCheatLog(log: AntiCheatLog): Promise<AntiCheatLo
   return log;
 }
 
-export async function addStudent(student: StudentAccount): Promise<StudentAccount> {
+export async function addStudent(student: StudentAccount): Promise<{
+  student: StudentAccount;
+  savedToSupabase: boolean;
+  storageWarning?: string;
+}> {
+  let finalStudent = { ...student };
+  const sb = getSupabase();
+  let savedToSupabase = false;
+  let storageWarning: string | undefined;
+
+  if (sb) {
+    try {
+      // Preserve existing id if NISN already exists in Supabase to avoid unique constraint conflicts
+      const existingLookup = await sb
+        .from('students')
+        .select('id')
+        .eq('nisn', finalStudent.nisn)
+        .maybeSingle();
+
+      if (!existingLookup.error && existingLookup.data?.id) {
+        finalStudent = { ...finalStudent, id: existingLookup.data.id };
+      }
+
+      const { error: upsertError } = await sb.from('students').upsert({
+        id: finalStudent.id,
+        nisn: finalStudent.nisn,
+        name: finalStudent.name,
+        class_name: finalStudent.className,
+        pin: finalStudent.pin,
+      });
+
+      if (upsertError) {
+        const msg = upsertError.message || 'Gagal menyimpan ke tabel students Supabase.';
+        if (/could not find the table|relation .* does not exist/i.test(msg)) {
+          storageWarning =
+            'Akun siswa tersimpan sementara di penyimpanan lokal karena tabel "students" di Supabase belum dibuat. Jalankan Skema SQL di tab Supabase & GAS agar tersimpan permanen.';
+        } else if (/permission denied|row-level security|not allowed/i.test(msg)) {
+          storageWarning = `Akun siswa tersimpan sementara di server lokal, namun Supabase menolak penulisan (${msg}). Jalankan ulang Skema SQL terbaru (dengan GRANT service_role) di Supabase SQL Editor dan periksa SUPABASE_SECRET_KEY.`;
+        } else {
+          storageWarning = `Akun siswa tersimpan sementara di server lokal, namun sinkronisasi Supabase gagal: ${msg}`;
+        }
+      } else {
+        savedToSupabase = true;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal menghubungi Supabase.';
+      storageWarning = `Akun siswa tersimpan sementara di server lokal, namun gagal sinkron ke Supabase: ${msg}`;
+    }
+  }
+
   const dbData = ensureLocalStore();
-  const idx = dbData.students.findIndex((s) => s.nisn === student.nisn || s.id === student.id);
-  if (idx >= 0) dbData.students[idx] = student;
-  else dbData.students.push(student);
+  const idx = dbData.students.findIndex(
+    (s) => s.nisn === finalStudent.nisn || s.id === finalStudent.id
+  );
+  if (idx >= 0) dbData.students[idx] = finalStudent;
+  else dbData.students.push(finalStudent);
   saveLocalStore(dbData);
 
   if (cachedDb) {
-    const cIdx = cachedDb.students.findIndex((s) => s.nisn === student.nisn || s.id === student.id);
-    if (cIdx >= 0) cachedDb.students[cIdx] = student;
-    else cachedDb.students.push(student);
+    const cIdx = cachedDb.students.findIndex(
+      (s) => s.nisn === finalStudent.nisn || s.id === finalStudent.id
+    );
+    if (cIdx >= 0) cachedDb.students[cIdx] = finalStudent;
+    else cachedDb.students.push(finalStudent);
   }
 
-  const sb = getSupabase();
-  if (sb) {
-    await sb.from('students').upsert({
-      id: student.id,
-      nisn: student.nisn,
-      name: student.name,
-      class_name: student.className,
-      pin: student.pin,
-    });
-  }
-  return student;
+  return { student: finalStudent, savedToSupabase, storageWarning };
 }
 
 export async function deleteStudentById(id: string): Promise<void> {

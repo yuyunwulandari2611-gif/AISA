@@ -120,6 +120,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     rombel: 'A',
     pin: '',
   });
+  const [savingStudent, setSavingStudent] = useState(false);
+  const [studentFeedback, setStudentFeedback] = useState<{
+    type: 'success' | 'warning' | 'error';
+    text: string;
+  } | null>(null);
   const [newStaff, setNewStaff] = useState({
     username: '',
     name: '',
@@ -128,6 +133,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     subjectArea: '',
     password: '',
   });
+  const [savingStaff, setSavingStaff] = useState(false);
+  const [staffFeedback, setStaffFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
   const [confirmDeleteUser, setConfirmDeleteUser] = useState<{
     kind: 'student' | 'staff';
     id: string;
@@ -441,28 +451,83 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const handleAddStudent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newStudent.nisn || !newStudent.name || !newStudent.pin) return;
+    if (!newStudent.nisn.trim() || !newStudent.name.trim() || !newStudent.pin.trim()) {
+      setStudentFeedback({
+        type: 'error',
+        text: 'NISN, nama lengkap, dan PIN wajib diisi.',
+      });
+      return;
+    }
+    setSavingStudent(true);
+    setStudentFeedback(null);
+    const savedGrade = newStudent.gradeLevel;
     const className = `${newStudent.gradeLevel}-${newStudent.rombel}`;
-    await authFetch('/api/users/student', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: editingStudentId || undefined,
-        nisn: newStudent.nisn,
-        name: newStudent.name,
-        className,
-        pin: newStudent.pin,
-      }),
-    });
-    setEditingStudentId(null);
-    setNewStudent({
-      nisn: '',
-      name: '',
-      gradeLevel: rombelFilter !== 'all' ? rombelFilter : 'Kelas 6',
-      rombel: 'A',
-      pin: '',
-    });
-    await refreshUsers();
+    try {
+      const res = await authFetch('/api/users/student', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editingStudentId || undefined,
+          nisn: newStudent.nisn.trim(),
+          name: newStudent.name.trim(),
+          className,
+          pin: newStudent.pin.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStudentFeedback({
+          type: 'error',
+          text: data.error || `Gagal menyimpan peserta (HTTP ${res.status}).`,
+        });
+        return;
+      }
+
+      if (data.student) {
+        setStudents((prev) => {
+          const exists = prev.some(
+            (s) => s.id === data.student.id || s.nisn === data.student.nisn
+          );
+          if (exists) {
+            return prev.map((s) =>
+              s.id === data.student.id || s.nisn === data.student.nisn ? data.student : s
+            );
+          }
+          return [...prev, data.student];
+        });
+      }
+
+      if (rombelFilter !== 'all' && rombelFilter.toLowerCase() !== savedGrade.toLowerCase()) {
+        setRombelFilter(savedGrade);
+      }
+
+      setEditingStudentId(null);
+      setNewStudent({
+        nisn: '',
+        name: '',
+        gradeLevel: savedGrade,
+        rombel: 'A',
+        pin: '',
+      });
+      setStudentFeedback(
+        data.storageWarning
+          ? { type: 'warning', text: data.storageWarning }
+          : {
+              type: 'success',
+              text: data.savedToSupabase
+                ? `Peserta "${data.student?.name || ''}" berhasil disimpan ke database Supabase.`
+                : `Peserta "${data.student?.name || ''}" berhasil disimpan.`,
+            }
+      );
+      await refreshUsers();
+    } catch {
+      setStudentFeedback({
+        type: 'error',
+        text: 'Koneksi ke server terputus saat menyimpan peserta.',
+      });
+    } finally {
+      setSavingStudent(false);
+    }
   };
 
   const handleStartEditStudent = (st: StudentAccount) => {
@@ -481,21 +546,50 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const handleAddStaff = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newStaff.username || !newStaff.name || !newStaff.password) return;
-    await authFetch('/api/users/staff', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newStaff),
-    });
-    setNewStaff({
-      username: '',
-      name: '',
-      title: '',
-      role: 'guru',
-      subjectArea: '',
-      password: '',
-    });
-    await refreshUsers();
+    if (!newStaff.username.trim() || !newStaff.name.trim() || !newStaff.password.trim()) {
+      setStaffFeedback({
+        type: 'error',
+        text: 'Username, nama lengkap, dan kata sandi wajib diisi.',
+      });
+      return;
+    }
+    setSavingStaff(true);
+    setStaffFeedback(null);
+    try {
+      const res = await authFetch('/api/users/staff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newStaff),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStaffFeedback({
+          type: 'error',
+          text: data.error || `Gagal menyimpan akun staf (HTTP ${res.status}).`,
+        });
+        return;
+      }
+      setNewStaff({
+        username: '',
+        name: '',
+        title: '',
+        role: 'guru',
+        subjectArea: '',
+        password: '',
+      });
+      setStaffFeedback({
+        type: 'success',
+        text: `Akun "${data.staff?.name || ''}" berhasil disimpan.`,
+      });
+      await refreshUsers();
+    } catch {
+      setStaffFeedback({
+        type: 'error',
+        text: 'Koneksi ke server terputus saat menyimpan akun staf.',
+      });
+    } finally {
+      setSavingStaff(false);
+    }
   };
 
   const teacherList = staffList.filter((s) => s.role === 'guru');
@@ -1364,11 +1458,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
                         />
                       </div>
+                      {studentFeedback && (
+                        <div
+                          role="alert"
+                          className={`p-2.5 rounded-lg border text-xs ${
+                            studentFeedback.type === 'success'
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                              : studentFeedback.type === 'warning'
+                                ? 'bg-amber-50 border-amber-200 text-amber-900'
+                                : 'bg-red-50 border-red-200 text-red-900'
+                          }`}
+                        >
+                          {studentFeedback.text}
+                        </div>
+                      )}
                       <button
                         type="submit"
-                        className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg cursor-pointer"
+                        disabled={savingStudent}
+                        className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-xs font-semibold rounded-lg cursor-pointer"
                       >
-                        {editingStudentId ? 'Simpan Perubahan Rombel' : 'Simpan Akun Peserta'}
+                        {savingStudent
+                          ? 'Menyimpan...'
+                          : editingStudentId
+                            ? 'Simpan Perubahan Rombel'
+                            : 'Simpan Akun Peserta'}
                       </button>
                     </form>
 
@@ -1501,11 +1614,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
                       />
                     </div>
+                    {staffFeedback && (
+                      <div
+                        role="alert"
+                        className={`p-2.5 rounded-lg border text-xs ${
+                          staffFeedback.type === 'success'
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                            : 'bg-red-50 border-red-200 text-red-900'
+                        }`}
+                      >
+                        {staffFeedback.text}
+                      </div>
+                    )}
                     <button
                       type="submit"
-                      className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg cursor-pointer"
+                      disabled={savingStaff}
+                      className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-xs font-semibold rounded-lg cursor-pointer"
                     >
-                      Simpan Akun Staf
+                      {savingStaff ? 'Menyimpan...' : 'Simpan Akun Staf'}
                     </button>
                   </form>
 
@@ -1578,6 +1704,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               status={integrationStatus}
               supabaseSql={supabaseSql}
               gasCode={gasCode}
+              onStatusChange={(next) => setIntegrationStatus(next)}
             />
           )}
         </main>

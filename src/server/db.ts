@@ -40,7 +40,11 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = {
   updatedAt: '2026-11-23T00:00:00.000Z',
 };
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const BUNDLED_DB_FILE = path.resolve(process.cwd(), 'data', 'cbt_database.json');
+const DATA_DIR = IS_SERVERLESS
+  ? path.join('/tmp', 'aisa-cbt-data')
+  : path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'cbt_database.json');
 
 // =========================================================================
@@ -93,17 +97,40 @@ function createEmptyStore(): DatabaseSchema {
   };
 }
 
-function ensureLocalStore(): DatabaseSchema {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+function saveLocalStore(data: DatabaseSchema) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const tmpFile = `${DB_FILE}.tmp`;
+    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), 'utf-8');
+    fs.renameSync(tmpFile, DB_FILE);
+  } catch (err) {
+    console.warn('Local store write skipped:', err);
   }
-  if (!fs.existsSync(DB_FILE)) {
+}
+
+function ensureLocalStore(): DatabaseSchema {
+  let raw = '';
+  if (fs.existsSync(DB_FILE)) {
+    raw = fs.readFileSync(DB_FILE, 'utf-8');
+  } else if (IS_SERVERLESS && fs.existsSync(BUNDLED_DB_FILE)) {
+    raw = fs.readFileSync(BUNDLED_DB_FILE, 'utf-8');
+  } else {
     const empty = createEmptyStore();
-    fs.writeFileSync(DB_FILE, JSON.stringify(empty, null, 2), 'utf-8');
+    saveLocalStore(empty);
     return empty;
   }
-  const raw = fs.readFileSync(DB_FILE, 'utf-8');
-  const parsed = JSON.parse(raw) as Partial<DatabaseSchema>;
+
+  let parsed: Partial<DatabaseSchema> = {};
+  try {
+    parsed = JSON.parse(raw) as Partial<DatabaseSchema>;
+  } catch {
+    const empty = createEmptyStore();
+    saveLocalStore(empty);
+    return empty;
+  }
+
   const normalized: DatabaseSchema = {
     admins: Array.isArray(parsed.admins) ? parsed.admins : [],
     students: Array.isArray(parsed.students) ? parsed.students : [],
@@ -119,17 +146,10 @@ function ensureLocalStore(): DatabaseSchema {
   if (!normalized.admins.some((a) => a.role === 'admin')) {
     normalized.admins.unshift(createDefaultAdmin());
     saveLocalStore(normalized);
+  } else if (!fs.existsSync(DB_FILE)) {
+    saveLocalStore(normalized);
   }
   return normalized;
-}
-
-function saveLocalStore(data: DatabaseSchema) {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  const tmpFile = `${DB_FILE}.tmp`;
-  fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), 'utf-8');
-  fs.renameSync(tmpFile, DB_FILE);
 }
 
 // =========================================================================

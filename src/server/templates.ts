@@ -107,6 +107,17 @@ CREATE TABLE IF NOT EXISTS public.drive_assets (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS public.admins (
+  id TEXT PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  title TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('admin', 'guru')),
+  subject_area TEXT,
+  password TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS public.site_settings (
   id TEXT PRIMARY KEY DEFAULT 'default',
   app_name TEXT NOT NULL,
@@ -118,7 +129,7 @@ CREATE TABLE IF NOT EXISTS public.site_settings (
   login_heading TEXT NOT NULL,
   logo_url TEXT NOT NULL DEFAULT '',
   background_image_url TEXT NOT NULL DEFAULT '',
-  show_quick_demo BOOLEAN NOT NULL DEFAULT true,
+  show_quick_demo BOOLEAN NOT NULL DEFAULT false,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

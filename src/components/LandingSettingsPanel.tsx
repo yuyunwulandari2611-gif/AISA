@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Image as ImageIcon, RotateCcw, Save, Trash2, Upload } from 'lucide-react';
 import type { DriveAsset, SiteSettings } from '../types/cbt.ts';
+import { authFetch } from '../lib/authClient.ts';
 
 interface LandingSettingsPanelProps {
   settings: SiteSettings;
@@ -54,7 +55,7 @@ export const LandingSettingsPanel: React.FC<LandingSettingsPanelProps> = ({
         reader.readAsDataURL(file);
       });
 
-      const res = await fetch('/api/drive/upload', {
+      const res = await authFetch('/api/drive/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -91,12 +92,10 @@ export const LandingSettingsPanel: React.FC<LandingSettingsPanelProps> = ({
     setSaving(true);
     setFeedback(null);
     try {
-      const res = await fetch('/api/settings', {
+      const res = await authFetch('/api/settings', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'x-user-role': actorRole,
-          'x-user-id': actorId,
         },
         body: JSON.stringify(draft),
       });
@@ -122,12 +121,10 @@ export const LandingSettingsPanel: React.FC<LandingSettingsPanelProps> = ({
     setResetting(true);
     setFeedback(null);
     try {
-      const res = await fetch('/api/settings', {
+      const res = await authFetch('/api/settings', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'x-user-role': actorRole,
-          'x-user-id': actorId,
         },
         body: JSON.stringify({ reset: true }),
       });

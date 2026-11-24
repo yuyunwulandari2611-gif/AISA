@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowLeft, CheckCircle2, ShieldAlert, ShieldCheck } from 'lucide-react';
 import type { SubmissionRecord } from '../types/cbt.ts';
+import { authFetch } from '../lib/authClient.ts';
 
 interface ExamResultViewProps {
   submission: SubmissionRecord;
@@ -24,11 +25,7 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
     }
     let cancelled = false;
     setLoadingDetails(true);
-    fetch(
-      `/api/submissions/${encodeURIComponent(
-        initialSubmission.id
-      )}?role=student&studentNisn=${encodeURIComponent(initialSubmission.studentNisn)}`
-    )
+    authFetch(`/api/submissions/${encodeURIComponent(initialSubmission.id)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!cancelled && d?.submission) {

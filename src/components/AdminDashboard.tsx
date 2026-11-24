@@ -23,6 +23,7 @@ import { DriveMediaManager, IntegrationConfigPanel } from './IntegrationPanel.ts
 import { LandingSettingsPanel } from './LandingSettingsPanel.tsx';
 import { QuestionEditorModal } from './QuestionEditorModal.tsx';
 import { QuestionImportModal } from './QuestionImportModal.tsx';
+import { authFetch } from '../lib/authClient.ts';
 import type {
   AntiCheatLog,
   Assessment,
@@ -117,7 +118,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     name: '',
     gradeLevel: 'Kelas 6',
     rombel: 'A',
-    pin: '123456',
+    pin: '',
   });
   const [newStaff, setNewStaff] = useState({
     username: '',
@@ -134,24 +135,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   } | null>(null);
 
   const loadAllData = async () => {
-    const scopeQuery = `role=${encodeURIComponent(user.role)}&teacherId=${encodeURIComponent(user.id)}`;
-    const [asmRes, subRes, logRes, drvRes, usrRes, intRes, setRes] = await Promise.all([
-      fetch(`/api/assessments?${scopeQuery}`),
-      fetch(`/api/submissions?${scopeQuery}`),
-      fetch(`/api/anti-cheat/logs?${scopeQuery}`),
-      fetch('/api/drive/files'),
-      fetch('/api/users'),
-      fetch('/api/integrations/status'),
+    const basePromises = [
+      authFetch('/api/assessments'),
+      authFetch('/api/submissions'),
+      authFetch('/api/anti-cheat/logs'),
+      authFetch('/api/drive/files'),
       fetch('/api/settings'),
+    ];
+    const adminPromises = isAdmin
+      ? [authFetch('/api/users'), authFetch('/api/integrations/status')]
+      : [];
+
+    const [asmRes, subRes, logRes, drvRes, setRes, usrRes, intRes] = await Promise.all([
+      ...basePromises,
+      ...adminPromises,
     ]);
 
-    const asmJson = await asmRes.json();
-    const subJson = await subRes.json();
-    const logJson = await logRes.json();
-    const drvJson = await drvRes.json();
-    const usrJson = await usrRes.json();
-    const intJson = await intRes.json();
-    const setJson = await setRes.json();
+    const asmJson = asmRes.ok ? await asmRes.json() : { assessments: [] };
+    const subJson = subRes.ok ? await subRes.json() : { submissions: [] };
+    const logJson = logRes.ok ? await logRes.json() : { logs: [] };
+    const drvJson = drvRes.ok ? await drvRes.json() : { files: [], gasReachable: false };
+    const setJson = setRes.ok ? await setRes.json() : {};
+    const usrJson = usrRes && usrRes.ok ? await usrRes.json() : { students: [], staff: [] };
+    const intJson = intRes && intRes.ok ? await intRes.json() : {};
 
     const asmList: EnrichedAssessment[] = asmJson.assessments || [];
     setAssessments(asmList);
@@ -165,11 +171,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setLogs(logJson.logs || []);
     setDriveAssets(drvJson.files || []);
     setGasReachable(Boolean(drvJson.gasReachable));
-    setStudents(usrJson.students || []);
-    setStaffList(usrJson.staff || []);
-    setIntegrationStatus(intJson.status || null);
-    setSupabaseSql(intJson.supabaseSql || '');
-    setGasCode(intJson.gasCode || '');
+    if (isAdmin) {
+      setStudents(usrJson.students || []);
+      setStaffList(usrJson.staff || []);
+      setIntegrationStatus(intJson.status || null);
+      setSupabaseSql(intJson.supabaseSql || '');
+      setGasCode(intJson.gasCode || '');
+    }
     if (setJson.settings) {
       setSiteSettings(setJson.settings);
     }
@@ -184,19 +192,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setAsmQuestions([]);
       return;
     }
-    fetch(`/api/questions/${selectedAsmForQuestions}`, {
-      headers: {
-        'x-user-role': user.role,
-        'x-user-id': user.id,
-      },
-    })
+    authFetch(`/api/questions/${selectedAsmForQuestions}`)
       .then((r) => (r.ok ? r.json() : { questions: [] }))
       .then((d) => setAsmQuestions(d.questions || []));
   }, [selectedAsmForQuestions, user.id, user.role]);
 
   const refreshAssessments = async () => {
-    const scopeQuery = `role=${encodeURIComponent(user.role)}&teacherId=${encodeURIComponent(user.id)}`;
-    const res = await fetch(`/api/assessments?${scopeQuery}`);
+    const res = await authFetch('/api/assessments');
     if (res.ok) {
       const json = await res.json();
       const asmList: EnrichedAssessment[] = json.assessments || [];
@@ -211,7 +213,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const refreshUsers = async () => {
-    const res = await fetch('/api/users');
+    const res = await authFetch('/api/users');
     if (res.ok) {
       const json = await res.json();
       setStudents(json.students || []);
@@ -220,10 +222,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const refreshSubmissionsAndDrive = async () => {
-    const scopeQuery = `role=${encodeURIComponent(user.role)}&teacherId=${encodeURIComponent(user.id)}`;
     const [subRes, drvRes] = await Promise.all([
-      fetch(`/api/submissions?${scopeQuery}`),
-      fetch('/api/drive/files'),
+      authFetch('/api/submissions'),
+      authFetch('/api/drive/files'),
     ]);
     if (subRes.ok) {
       const subJson = await subRes.json();
@@ -249,11 +250,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     if (sub.gradedItems.length === 0) {
       setLoadingDrawerDetail(true);
       try {
-        const res = await fetch(
-          `/api/submissions/${encodeURIComponent(sub.id)}?role=${encodeURIComponent(
-            user.role
-          )}&teacherId=${encodeURIComponent(user.id)}`
-        );
+        const res = await authFetch(`/api/submissions/${encodeURIComponent(sub.id)}`);
         if (res.ok) {
           const data = await res.json();
           if (data.submission) {
@@ -285,7 +282,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         };
       });
 
-      const res = await fetch(`/api/submissions/${selectedSubmission.id}/calibrate`, {
+      const res = await authFetch(`/api/submissions/${selectedSubmission.id}/calibrate`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -354,12 +351,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setBackingUpDrive(true);
     setBackupFeedback(null);
     try {
-      const res = await fetch('/api/drive/backup-scores', {
+      const res = await authFetch('/api/drive/backup-scores', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-user-role': user.role,
-          'x-user-id': user.id,
         },
         body: JSON.stringify({ assessmentId: gradeAssessmentFilter }),
       });
@@ -391,7 +386,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       gradeLevel: String(fd.get('gradeLevel') || 'Kelas 6'),
       semester: String(fd.get('semester') || 'Gasal'),
       academicYear: String(fd.get('academicYear') || '2026/2027'),
-      token: String(fd.get('token') || 'IHSAN26').toUpperCase(),
+      token: String(fd.get('token') || '').trim().toUpperCase(),
       durationMinutes: Number(fd.get('durationMinutes') || 45),
       maxViolations: Number(fd.get('maxViolations') || 3),
       shuffleQuestions: fd.get('shuffleQuestions') === 'on',
@@ -404,12 +399,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       createdAt: editingAssessment?.createdAt || new Date().toISOString(),
     };
 
-    const res = await fetch('/api/assessments', {
+    const res = await authFetch('/api/assessments', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-user-role': user.role,
-        'x-user-id': user.id,
       },
       body: JSON.stringify(payload),
     });
@@ -424,12 +417,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const handleSaveQuestion = async (question: Question) => {
-    const res = await fetch('/api/questions', {
+    const res = await authFetch('/api/questions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-user-role': user.role,
-        'x-user-id': user.id,
       },
       body: JSON.stringify(question),
     });
@@ -437,12 +428,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Gagal menyimpan butir soal.');
     }
-    const qRes = await fetch(`/api/questions/${question.assessmentId}`, {
-      headers: {
-        'x-user-role': user.role,
-        'x-user-id': user.id,
-      },
-    });
+    const qRes = await authFetch(`/api/questions/${question.assessmentId}`);
     const qJson = await qRes.json();
     const nextQuestions: Question[] = qJson.questions || [];
     setAsmQuestions(nextQuestions);
@@ -455,9 +441,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const handleAddStudent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newStudent.nisn || !newStudent.name) return;
+    if (!newStudent.nisn || !newStudent.name || !newStudent.pin) return;
     const className = `${newStudent.gradeLevel}-${newStudent.rombel}`;
-    await fetch('/api/users/student', {
+    await authFetch('/api/users/student', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -474,7 +460,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       name: '',
       gradeLevel: rombelFilter !== 'all' ? rombelFilter : 'Kelas 6',
       rombel: 'A',
-      pin: '123456',
+      pin: '',
     });
     await refreshUsers();
   };
@@ -495,8 +481,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const handleAddStaff = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newStaff.username || !newStaff.name) return;
-    await fetch('/api/users/staff', {
+    if (!newStaff.username || !newStaff.name || !newStaff.password) return;
+    await authFetch('/api/users/staff', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newStaff),
@@ -1295,7 +1281,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 name: '',
                                 gradeLevel: rombelFilter !== 'all' ? rombelFilter : 'Kelas 6',
                                 rombel: 'A',
-                                pin: '123456',
+                                pin: '',
                               });
                             }}
                             className="text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
@@ -1311,7 +1297,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           required
                           value={newStudent.nisn}
                           onChange={(e) => setNewStudent({ ...newStudent, nisn: e.target.value })}
-                          placeholder="0134829199"
+                          placeholder="Masukkan NISN peserta"
                           className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
                         />
                       </div>
@@ -1374,6 +1360,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           required
                           value={newStudent.pin}
                           onChange={(e) => setNewStudent({ ...newStudent, pin: e.target.value })}
+                          placeholder="Masukkan PIN peserta"
                           className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
                         />
                       </div>
@@ -1664,7 +1651,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <input
                     name="subject"
                     required
-                    defaultValue={editingAssessment?.subject || 'Literasi & Numerasi'}
+                    defaultValue={editingAssessment?.subject || ''}
+                    placeholder="Contoh: Literasi & Numerasi"
                     className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
                   />
                 </div>
@@ -1701,7 +1689,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <input
                       type="date"
                       name="scheduledDate"
-                      defaultValue={editingAssessment?.scheduledDate || '2026-12-07'}
+                      defaultValue={editingAssessment?.scheduledDate || new Date().toISOString().slice(0, 10)}
                       className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg bg-white"
                     />
                   </div>
@@ -1712,7 +1700,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <input
                       type="text"
                       name="scheduleWindow"
-                      defaultValue={editingAssessment?.scheduleWindow || '07.30 - 09.00 WIB'}
+                      defaultValue={editingAssessment?.scheduleWindow || ''}
                       placeholder="07.30 - 09.00 WIB"
                       className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
                     />
@@ -1766,7 +1754,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <input
                     name="token"
                     required
-                    defaultValue={editingAssessment?.token || 'IHSAN26'}
+                    defaultValue={editingAssessment?.token || ''}
+                    placeholder="Masukkan token"
                     className="w-full px-3 py-2 text-sm font-mono uppercase border border-slate-300 rounded-lg"
                   />
                 </div>
@@ -1957,8 +1946,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </p>
                 ) : selectedSubmission.gradedItems.length === 0 ? (
                   <p className="text-xs text-slate-500 text-center py-6">
-                    Rekaman ini adalah data contoh awal ringkas. Pengumpulan ujian baru akan
-                    menampilkan rincian penuh per butir soal.
+                    Belum ada rincian jawaban per butir soal pada rekaman ini.
                   </p>
                 ) : (
                   selectedSubmission.gradedItems.map((item) => (
@@ -2045,12 +2033,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <button
                 type="button"
                 onClick={async () => {
-                  await fetch(`/api/assessments/${confirmDeleteAsm.id}`, {
+                  await authFetch(`/api/assessments/${confirmDeleteAsm.id}`, {
                     method: 'DELETE',
-                    headers: {
-                      'x-user-role': user.role,
-                      'x-user-id': user.id,
-                    },
                   });
                   setConfirmDeleteAsm(null);
                   await refreshAssessments();
@@ -2083,21 +2067,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <button
                 type="button"
                 onClick={async () => {
-                  await fetch(`/api/questions/${confirmDeleteQuestion.id}`, {
+                  await authFetch(`/api/questions/${confirmDeleteQuestion.id}`, {
                     method: 'DELETE',
-                    headers: {
-                      'x-user-role': user.role,
-                      'x-user-id': user.id,
-                    },
                   });
                   setConfirmDeleteQuestion(null);
                   if (selectedAsmForQuestions) {
-                    const qRes = await fetch(`/api/questions/${selectedAsmForQuestions}`, {
-                      headers: {
-                        'x-user-role': user.role,
-                        'x-user-id': user.id,
-                      },
-                    });
+                    const qRes = await authFetch(`/api/questions/${selectedAsmForQuestions}`);
                     const qJson = await qRes.json();
                     const nextQuestions: Question[] = qJson.questions || [];
                     setAsmQuestions(nextQuestions);
@@ -2141,7 +2116,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     confirmDeleteUser.kind === 'student'
                       ? `/api/users/student/${confirmDeleteUser.id}`
                       : `/api/users/staff/${confirmDeleteUser.id}`;
-                  await fetch(url, { method: 'DELETE' });
+                  await authFetch(url, { method: 'DELETE' });
                   setConfirmDeleteUser(null);
                   await refreshUsers();
                 }}

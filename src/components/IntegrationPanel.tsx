@@ -9,11 +9,13 @@ import {
   FileSpreadsheet,
   FolderOpen,
   Image as ImageIcon,
+  RefreshCw,
   Trash2,
   Upload,
   Video,
 } from 'lucide-react';
 import type { DriveAsset, IntegrationStatus } from '../types/cbt.ts';
+import { authFetch } from '../lib/authClient.ts';
 
 interface DriveManagerProps {
   assets: DriveAsset[];
@@ -52,7 +54,7 @@ export const DriveMediaManager: React.FC<DriveManagerProps> = ({
         reader.readAsDataURL(file);
       });
 
-      const res = await fetch('/api/drive/upload', {
+      const res = await authFetch('/api/drive/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -87,7 +89,7 @@ export const DriveMediaManager: React.FC<DriveManagerProps> = ({
     setSyncingAll(true);
     setSyncNotice(null);
     try {
-      const res = await fetch('/api/drive/sync-all', { method: 'POST' });
+      const res = await authFetch('/api/drive/sync-all', { method: 'POST' });
       const data = await res.json();
       if (!res.ok) {
         setSyncNotice(data.error || 'Gagal menyinkronkan ke Google Drive.');
@@ -104,7 +106,7 @@ export const DriveMediaManager: React.FC<DriveManagerProps> = ({
     if (!confirmDelete) return;
     setDeleting(true);
     try {
-      await fetch(`/api/drive/files/${confirmDelete.id}`, { method: 'DELETE' });
+      await authFetch(`/api/drive/files/${confirmDelete.id}`, { method: 'DELETE' });
       setConfirmDelete(null);
       await onRefresh();
     } finally {
@@ -345,14 +347,37 @@ interface IntegrationConfigPanelProps {
 }
 
 export const IntegrationConfigPanel: React.FC<IntegrationConfigPanelProps> = ({
-  status,
+  status: initialStatus,
   supabaseSql,
   gasCode,
 }) => {
+  const [status, setStatus] = useState<IntegrationStatus | null>(initialStatus);
   const [activeCodeTab, setActiveCodeTab] = useState<'supabase' | 'gas'>('supabase');
   const [copied, setCopied] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    gasReachable: boolean;
+    gasError: string | null;
+  } | null>(null);
 
   const currentCode = activeCodeTab === 'supabase' ? supabaseSql : gasCode;
+
+  const handleTestConnections = async () => {
+    setTesting(true);
+    try {
+      const res = await authFetch('/api/integrations/test', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status) setStatus(data.status);
+        setTestResult({
+          gasReachable: Boolean(data.gasReachable),
+          gasError: data.gasError || null,
+        });
+      }
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const handleCopy = () => {
     navigator.clipboard.writeText(currentCode);
@@ -372,53 +397,92 @@ export const IntegrationConfigPanel: React.FC<IntegrationConfigPanelProps> = ({
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-bold text-slate-900 tracking-tight">
-          Integrasi Database Supabase &amp; Google Apps Script (Drive)
-        </h2>
-        <p className="text-xs text-slate-600 mt-1">
-          Kredensial koneksi (<code className="font-mono">SUPABASE_URL</code>,{' '}
-          <code className="font-mono">SUPABASE_SERVICE_ROLE_KEY</code>, dan{' '}
-          <code className="font-mono">GAS_DRIVE_WEBAPP_URL</code>) dikonfigurasi secara aman melalui
-          panel <strong>Secrets</strong> server.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-xl font-bold text-slate-900 tracking-tight">
+            Integrasi Database Supabase &amp; Google Apps Script (Drive)
+          </h2>
+          <p className="text-xs text-slate-600 mt-1">
+            Kredensial koneksi (<code className="font-mono">SUPABASE_URL</code>,{' '}
+            <code className="font-mono">SUPABASE_SECRET_KEY</code>,{' '}
+            <code className="font-mono">SUPABASE_PUBLISHABLE_KEY</code>,{' '}
+            <code className="font-mono">SUPABASE_JWKS_URL</code>, dan{' '}
+            <code className="font-mono">GAS_DRIVE_WEBAPP_URL</code>) dikonfigurasi secara aman
+            melalui panel <strong>Secrets</strong> server.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          disabled={testing}
+          onClick={handleTestConnections}
+          className="px-4 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-semibold rounded-lg inline-flex items-center gap-2 shrink-0 cursor-pointer"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${testing ? 'animate-spin' : ''}`} />
+          <span>{testing ? 'Menguji Koneksi...' : 'Uji Koneksi Supabase & GAS'}</span>
+        </button>
       </div>
 
       {/* Connection Summary Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-2">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-sm font-bold text-slate-900 inline-flex items-center gap-2">
               <Database className="w-4 h-4 text-emerald-700" />
-              Database Nilai Instan (Supabase PostgreSQL)
+              Database Supabase PostgreSQL
             </span>
             <span
               className={`text-xs font-semibold ${
-                status?.supabaseConfigured ? 'text-emerald-700' : 'text-amber-700'
+                status?.supabaseConfigured
+                  ? status.supabaseTablesReady
+                    ? 'text-emerald-700'
+                    : 'text-amber-700'
+                  : 'text-amber-700'
               }`}
             >
-              {status?.supabaseConfigured ? 'Terhubung ke Supabase' : 'Mode Persisten Lokal Aktif'}
+              {status?.supabaseConfigured
+                ? status.supabaseTablesReady
+                  ? 'Terhubung & Tabel Siap'
+                  : 'Terhubung · Perlu Jalankan SQL'
+                : 'Mode Persisten Lokal Aktif'}
             </span>
           </div>
           <p className="text-xs text-slate-600 leading-relaxed">
             {status?.supabaseConfigured
-              ? `Terhubung ke host ${status.supabaseProjectHost} dengan mode hemat egress aktif (cache tulis-langsung di server, seleksi kolom ringan, serta lampiran media disimpan terpisah di Google Drive).`
-              : 'Saat SUPABASE_URL dan SUPABASE_SERVICE_ROLE_KEY belum disetel di Secrets, server menggunakan penyimpanan lokal persisten otomatis dengan mode hemat egress aktif saat terhubung ke Supabase.'}
+              ? status.supabaseTablesReady
+                ? `Terhubung ke ${status.supabaseProjectHost} dengan seluruh 8 tabel aktif (termasuk admins, assessments, questions, students, submissions).`
+                : `Host ${status.supabaseProjectHost} terhubung, namun tabel berikut belum dibuat di Supabase SQL Editor: ${status.supabaseMissingTables.join(', ')}. Salin skrip SQL di bawah lalu jalankan di Supabase SQL Editor.`
+              : 'Setel SUPABASE_URL dan SUPABASE_SECRET_KEY (atau SUPABASE_SERVICE_ROLE_KEY) di Secrets server untuk mengaktifkan database cloud Supabase.'}
           </p>
+          {status?.supabaseJwksUrl && (
+            <p className="text-[11px] font-mono text-slate-500 truncate">
+              JWKS: {status.supabaseJwksUrl}
+            </p>
+          )}
         </div>
 
         <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-2">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-sm font-bold text-slate-900 inline-flex items-center gap-2">
               <FolderOpen className="w-4 h-4 text-emerald-700" />
               Google Drive via Google Apps Script
             </span>
             <span
               className={`text-xs font-semibold ${
-                status?.gasDriveConfigured ? 'text-emerald-700' : 'text-amber-700'
+                status?.gasDriveConfigured
+                  ? testResult?.gasReachable === false
+                    ? 'text-red-700'
+                    : 'text-emerald-700'
+                  : 'text-amber-700'
               }`}
             >
-              {status?.gasDriveConfigured ? 'WebApp GAS Terhubung' : 'Menunggu URL WebApp GAS'}
+              {status?.gasDriveConfigured
+                ? testResult?.gasReachable
+                  ? 'WebApp GAS Aktif & Merespons'
+                  : testResult?.gasReachable === false
+                    ? 'WebApp GAS Gagal Dijangkau'
+                    : 'WebApp GAS Terkonfigurasi'
+                : 'Menunggu URL WebApp GAS'}
             </span>
           </div>
           <p className="text-xs text-slate-600 leading-relaxed">
@@ -426,6 +490,14 @@ export const IntegrationConfigPanel: React.FC<IntegrationConfigPanelProps> = ({
               ? 'Server meneruskan unggahan gambar/video soal dan cadangan rekap nilai CSV langsung ke folder Google Drive madrasah melalui Web App GAS.'
               : 'Tempel skrip Code.gs di bawah ke script.google.com, deploy sebagai Web App, lalu masukkan GAS_DRIVE_WEBAPP_URL di Secrets.'}
           </p>
+          {status?.gasFolderId && (
+            <p className="text-[11px] font-mono text-slate-500 truncate">
+              Folder ID Drive: {status.gasFolderId}
+            </p>
+          )}
+          {testResult?.gasError && (
+            <p className="text-[11px] text-red-700">Detail: {testResult.gasError}</p>
+          )}
         </div>
       </div>
 

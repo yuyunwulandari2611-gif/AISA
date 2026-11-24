@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
@@ -35,610 +36,59 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = {
   loginHeading: 'Masuk ke Al Ihsan Smart Asesment',
   logoUrl: '/src/assets/images/aisa_madrasah_logo_1795493183530.jpg',
   backgroundImageUrl: '/src/assets/images/madrasah_campus_hero_1794802017792.jpg',
-  showQuickDemo: true,
+  showQuickDemo: false,
   updatedAt: '2026-11-23T00:00:00.000Z',
 };
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'cbt_database.json');
 
-function createInitialData(): DatabaseSchema {
+// =========================================================================
+// PASSWORD HASHING (scrypt + constant-time verification)
+// =========================================================================
+export function hashPassword(plain: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(plain, salt, 64).toString('hex');
+  return `scrypt:${salt}:${derived}`;
+}
+
+export function verifyPassword(plain: string, stored: string): boolean {
+  if (!plain || !stored) return false;
+  if (stored.startsWith('scrypt:')) {
+    const parts = stored.split(':');
+    if (parts.length !== 3) return false;
+    const [, salt, hashHex] = parts;
+    const expected = Buffer.from(hashHex, 'hex');
+    const actual = crypto.scryptSync(plain, salt, 64);
+    if (expected.length !== actual.length) return false;
+    return crypto.timingSafeEqual(expected, actual);
+  }
+  const a = crypto.createHash('sha256').update(plain).digest();
+  const b = crypto.createHash('sha256').update(stored).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+export function createDefaultAdmin(): AdminAccount {
   return {
-    admins: [
-      {
-        id: 'adm-1',
-        username: 'admin',
-        name: 'H. Muhammad Ridwan, M.Pd.I',
-        title: 'Administrator Utama & Kepala Proktor',
-        role: 'admin',
-        subjectArea: 'Manajemen Madrasah',
-        password: 'admin2026',
-      },
-      {
-        id: 'guru-1',
-        username: 'guru',
-        name: 'Ustadz Ahmad Fauzi, S.Pd.I',
-        title: 'Guru Kelas VI & Pengampu Literasi-Numerasi',
-        role: 'guru',
-        subjectArea: 'Literasi & Numerasi',
-        password: 'guru2026',
-      },
-      {
-        id: 'guru-2',
-        username: 'wali5',
-        name: 'Ibu Siti Rohmah, S.Pd',
-        title: 'Guru Kelas V-A',
-        role: 'guru',
-        subjectArea: 'PAI & IPAS',
-        password: 'guru2026',
-      },
-    ],
-    students: [
-      {
-        id: 'stu-1a-1',
-        nisn: '0181001001',
-        name: 'Ahmad Zaki Al-Fatih',
-        className: 'Kelas 1-A',
-        pin: '123456',
-      },
-      {
-        id: 'stu-2a-1',
-        nisn: '0172001001',
-        name: 'Nadia Khairunnisa',
-        className: 'Kelas 2-A',
-        pin: '123456',
-      },
-      {
-        id: 'stu-3a-1',
-        nisn: '0163001001',
-        name: 'Fajar Maulana Malik',
-        className: 'Kelas 3-A',
-        pin: '123456',
-      },
-      {
-        id: 'stu-4a-1',
-        nisn: '0154001001',
-        name: 'Salma Azzahra Putri',
-        className: 'Kelas 4-A',
-        pin: '123456',
-      },
-      {
-        id: 'stu-4',
-        nisn: '0145120301',
-        name: 'Zahra Maulida Husna',
-        className: 'Kelas 5-A',
-        pin: '123456',
-      },
-      {
-        id: 'stu-1',
-        nisn: '0134829101',
-        name: 'Muhammad Rizqi Pratama',
-        className: 'Kelas 6-A',
-        pin: '123456',
-      },
-      {
-        id: 'stu-2',
-        nisn: '0134829102',
-        name: 'Aisyah Putri Ramadhani',
-        className: 'Kelas 6-A',
-        pin: '123456',
-      },
-      {
-        id: 'stu-3',
-        nisn: '0134829103',
-        name: 'Bagas Satria Nugroho',
-        className: 'Kelas 6-B',
-        pin: '123456',
-      },
-    ],
-    assessments: [
-      {
-        id: 'asm-asas-6',
-        title: 'Asesmen Sumatif Akhir Semester (ASAS) Gasal — Literasi & Numerasi',
-        category: 'Asesmen Sumatif Akhir Semester',
-        subject: 'Literasi & Numerasi Terpadu',
-        gradeLevel: 'Kelas 6',
-        semester: 'Gasal',
-        academicYear: '2026/2027',
-        token: 'IHSAN6',
-        durationMinutes: 45,
-        maxViolations: 3,
-        shuffleQuestions: false,
-        showInstantResult: true,
-        status: 'active',
-        assignedTeacherId: 'guru-1',
-        assignedTeacherName: 'Ustadz Ahmad Fauzi, S.Pd.I',
-        scheduledDate: '2026-12-07',
-        scheduleWindow: '07.30 - 09.00 WIB',
-        createdAt: '2026-11-10T07:00:00.000Z',
-      },
-      {
-        id: 'asm-ats-pai',
-        title: 'Asesmen Tengah Semester — Akidah Akhlak & Literasi Keislaman',
-        category: 'Asesmen Tengah Semester',
-        subject: 'Akidah Akhlak & Literasi',
-        gradeLevel: 'Kelas 5',
-        semester: 'Gasal',
-        academicYear: '2026/2027',
-        token: 'AKHLAK5',
-        durationMinutes: 30,
-        maxViolations: 3,
-        shuffleQuestions: true,
-        showInstantResult: true,
-        status: 'active',
-        assignedTeacherId: 'guru-2',
-        assignedTeacherName: 'Ibu Siti Rohmah, S.Pd',
-        scheduledDate: '2026-12-08',
-        scheduleWindow: '09.30 - 11.00 WIB',
-        createdAt: '2026-11-05T07:00:00.000Z',
-      },
-      {
-        id: 'asm-akm-try',
-        title: 'Try Out Asesmen Kompetensi Madrasah (AKM) — Paket Penalaran',
-        category: 'Try Out AKM',
-        subject: 'Literasi Sains & Numerasi',
-        gradeLevel: 'Kelas 6',
-        semester: 'Gasal',
-        academicYear: '2026/2027',
-        token: 'AKM2026',
-        durationMinutes: 40,
-        maxViolations: 3,
-        shuffleQuestions: false,
-        showInstantResult: true,
-        status: 'active',
-        assignedTeacherId: 'guru-1',
-        assignedTeacherName: 'Ustadz Ahmad Fauzi, S.Pd.I',
-        scheduledDate: '2026-12-10',
-        scheduleWindow: '07.30 - 09.00 WIB',
-        createdAt: '2026-11-02T07:00:00.000Z',
-      },
-    ],
-    questions: [
-      {
-        id: 'q-asas-1',
-        assessmentId: 'asm-asas-6',
-        orderNumber: 1,
-        type: 'pg',
-        domain: 'Literasi Membaca',
-        cognitiveLevel: 'L2 Penerapan',
-        stimulusTitle: 'Pojok Baca Serambi Madrasah Soborejo',
-        stimulusPassage:
-          'Setiap pukul 06.45 WIB sebelum bel masuk berbunyi, siswa kelas VI MI Ma\'arif Al Ihsan Soborejo berkumpul di Pojok Baca Serambi. Di rak kayu jati sebelah jendela lengkung, tersedia buku fabel nusantara seperti Kancil dan Buaya, kisah teladan sahabat Nabi, serta buku pengetahuan desa.\n\nFatimah dan Rahma memilih dua buku berbeda setiap pekan. Setelah membaca selama lima belas menit, mereka bertukar ringkasan cerita menggunakan bahasa sendiri di kartu baca. Kebiasaan sederhana ini membuat kosakata dan pemahaman bacaan seluruh siswa meningkat pesat saat menghadapi soal cerita panjang.',
-        imageUrl: '/src/assets/images/literacy_reading_stimulus_1794802018035.jpg',
-        imageCaption: 'Ilustrasi kegiatan membaca berpasangan di sudut perpustakaan madrasah.',
-        prompt:
-          'Berdasarkan wacana di atas, apa tujuan utama kegiatan bertukar ringkasan cerita setelah membaca selama lima belas menit?',
-        options: [
-          {
-            id: 'opt-1a',
-            label: 'A',
-            text: 'Menghafal seluruh halaman buku sebelum jam pelajaran dimulai.',
-          },
-          {
-            id: 'opt-1b',
-            label: 'B',
-            text: 'Melatih pemahaman isi bacaan dan memperkaya kosakata dengan menceritakan ulang memakai bahasa sendiri.',
-          },
-          {
-            id: 'opt-1c',
-            label: 'C',
-            text: 'Menggantikan tugas menulis esai yang diberikan oleh guru kelas.',
-          },
-          {
-            id: 'opt-1d',
-            label: 'D',
-            text: 'Membatasi jumlah buku yang boleh dipinjam siswa setiap pekan.',
-          },
-        ],
-        correctOptionId: 'opt-1b',
-        maxPoints: 15,
-      },
-      {
-        id: 'q-asas-2',
-        assessmentId: 'asm-asas-6',
-        orderNumber: 2,
-        type: 'pgk',
-        domain: 'Numerasi',
-        cognitiveLevel: 'L2 Penerapan',
-        stimulusTitle: 'Desain Gazebo Literasi & Bak Tanaman Madrasah',
-        stimulusPassage:
-          'Komite MI Ma\'arif Al Ihsan Soborejo merancang sebuah gazebo baca dari kayu berukuran alas persegi 3,0 m × 3,0 m dengan tinggi tiang sisi 2,2 m. Di samping gazebo terdapat bak tanaman berbentuk balok dengan panjang 1,2 m, lebar 0,6 m, dan tinggi 0,4 m yang akan diisi media tanam subur.',
-        imageUrl: '/src/assets/images/numeracy_prism_diagram_1794802018092.jpg',
-        imageCaption: 'Denah ukuran gazebo baca dan bak tanaman persegi panjang.',
-        prompt:
-          'Perhatikan ukuran pada gambar teknis di samping. Pilihlah DUA pernyataan yang BENAR mengenai luas dan volume konstruksi tersebut!',
-        options: [
-          {
-            id: 'opt-2a',
-            label: 'A',
-            text: 'Luas lantai gazebo baca berbentuk persegi adalah 9,0 m².',
-          },
-          {
-            id: 'opt-2b',
-            label: 'B',
-            text: 'Volume maksimal tanah yang dapat mengisi penuh bak tanaman adalah 0,288 m³ (setara 288 liter).',
-          },
-          {
-            id: 'opt-2c',
-            label: 'C',
-            text: 'Luas alas bak tanaman berukuran 1,2 m × 0,6 m adalah 1,8 m².',
-          },
-          {
-            id: 'opt-2d',
-            label: 'D',
-            text: 'Keliling alas lantai gazebo adalah 6,0 meter.',
-          },
-        ],
-        correctOptionIds: ['opt-2a', 'opt-2b'],
-        maxPoints: 20,
-      },
-      {
-        id: 'q-asas-3',
-        assessmentId: 'asm-asas-6',
-        orderNumber: 3,
-        type: 'pgk',
-        domain: 'Literasi Sains',
-        cognitiveLevel: 'L3 Penalaran',
-        stimulusTitle: 'Rantai Makanan & Irigasi Sawah Terasering Soborejo',
-        stimulusPassage:
-          'Di perbukitan sekitar Desa Soborejo, para petani menanam padi dengan sistem terasering yang dialiri irigasi jernih. Di ekosistem sawah tersebut hidup tanaman padi, capung, katak sawah, burung bangau putih, dan mikroorganisme pengurai. Petani menjaga keseimbangan ekosistem dengan tidak menyemprotkan pestisida kimia secara berlebihan.',
-        imageUrl: '/src/assets/images/science_paddy_ecosystem_1794802018119.jpg',
-        imageCaption: 'Ekosistem sawah terasering dengan capung, katak, dan burung bangau.',
-        videoUrl: '/media/stimulus_ekosistem_sawah.mp4',
-        videoCaption: 'Video Pengamatan Ekosistem Sawah Terasering Soborejo (00:06)',
-        prompt:
-          'Amati gambar dan tayangan video ekosistem sawah di samping. Manakah pernyataan yang TEPAT mengenai peran makhluk hidup dan keseimbangan ekosistem sawah? (Pilih semua jawaban yang benar)',
-        options: [
-          {
-            id: 'opt-3a',
-            label: 'A',
-            text: 'Tanaman padi berperan sebagai produsen karena menghasilkan makanan sendiri melalui fotosintesis.',
-          },
-          {
-            id: 'opt-3b',
-            label: 'B',
-            text: 'Burung bangau putih yang memangsa katak menempati tingkat konsumen puncak dalam rantai makanan gambar tersebut.',
-          },
-          {
-            id: 'opt-3c',
-            label: 'C',
-            text: 'Jika populasi katak menurun drastis akibat perburuan liar, populasi burung bangau akan langsung meningkat pesat.',
-          },
-          {
-            id: 'opt-3d',
-            label: 'D',
-            text: 'Mengurangi pestisida berlebihan membantu menjaga kelestarian capung dan katak sebagai pengendali hama alami.',
-          },
-        ],
-        correctOptionIds: ['opt-3a', 'opt-3b', 'opt-3d'],
-        maxPoints: 20,
-      },
-      {
-        id: 'q-asas-4',
-        assessmentId: 'asm-asas-6',
-        orderNumber: 4,
-        type: 'pg',
-        domain: 'Numerasi',
-        cognitiveLevel: 'L2 Penerapan',
-        stimulusTitle: 'Gerakan Infaq Jumat & Koperasi Siswa Al Ihsan',
-        stimulusPassage:
-          'Dalam program Jumat Berkah bulan November, siswa kelas VI mengumpulkan dana infaq untuk santunan anak yatim dan perbaikan mushala. Kelas VI-A yang berjumlah 24 siswa mengumpulkan rata-rata Rp5.000 per anak. Kelas VI-B yang berjumlah 26 siswa mengumpulkan total Rp130.000. Sebanyak 40% dari seluruh dana gabungan disalurkan untuk pembelian buku Iqra dan Al-Qur\'an baru.',
-        prompt:
-          'Berapakah jumlah dana yang disalurkan untuk pembelian buku Iqra dan Al-Qur\'an baru?',
-        options: [
-          { id: 'opt-4a', label: 'A', text: 'Rp90.000' },
-          { id: 'opt-4b', label: 'B', text: 'Rp100.000' },
-          { id: 'opt-4c', label: 'C', text: 'Rp125.000' },
-          { id: 'opt-4d', label: 'D', text: 'Rp150.000' },
-        ],
-        correctOptionId: 'opt-4b',
-        maxPoints: 15,
-      },
-      {
-        id: 'q-asas-5',
-        assessmentId: 'asm-asas-6',
-        orderNumber: 5,
-        type: 'essay',
-        domain: 'Literasi Sains',
-        cognitiveLevel: 'L3 Penalaran',
-        stimulusTitle: 'Analisis Dampak Ekosistem Sawah (Stimulus Video)',
-        stimulusPassage:
-          'Perhatikan kembali tayangan video ekosistem sawah terasering di samping. Perairan sawah yang bersih mendukung kehidupan katak sawah dan capung, sedangkan burung bangau mencari makan di petak sawah tersebut.',
-        videoUrl: '/media/stimulus_ekosistem_sawah.mp4',
-        videoCaption: 'Video Stimulus: Amati interaksi antarorganisme di sawah terasering.',
-        imageUrl: '/src/assets/images/science_paddy_ecosystem_1794802018119.jpg',
-        imageCaption: 'Diagram rantai makanan sawah terasering.',
-        prompt:
-          'Jelaskan dengan bahasamu sendiri apa yang akan terjadi pada populasi serangga/capung dan burung bangau jika katak sawah habis ditangkap manusia, lalu sebutkan satu cara menjaga keseimbangan ekosistem sawah tersebut!',
-        options: [],
-        essayKeywords: [
-          'serangga|capung|hama|wereng',
-          'meningkat|bertambah|banyak|meledak',
-          'bangau|burung',
-          'berkurang|menurun|kelaparan|mati',
-          'jaga|lestari|tidak menangkap|pestisida|keseimbangan|rantai makanan',
-        ],
-        essaySampleAnswer:
-          'Jika katak habis ditangkap, populasi serangga/capung atau hama padi akan meningkat karena pemangsanya berkurang, sedangkan populasi burung bangau akan berkurang karena kehilangan sumber makanan. Cara menjaganya adalah melarang penangkapan katak liar dan mengurangi penggunaan pestisida kimia.',
-        maxPoints: 15,
-      },
-      {
-        id: 'q-asas-6',
-        assessmentId: 'asm-asas-6',
-        orderNumber: 6,
-        type: 'essay',
-        domain: 'Numerasi',
-        cognitiveLevel: 'L3 Penalaran',
-        stimulusTitle: 'Perhitungan Media Tanam Bak Kayu (Stimulus Video)',
-        stimulusPassage:
-          'Sekolah berencana menambah 2 buah bak tanaman baru dengan ukuran yang sama persis seperti pada tayangan video denah gazebo di samping (panjang 1,2 m, lebar 0,6 m, tinggi 0,4 m). Satu karung pupuk kompos berisi 24 liter.',
-        videoUrl: '/media/stimulus_geometri_gazebo.mp4',
-        videoCaption: 'Video Animasi Teknis Dimensi Bak Tanaman & Gazebo Baca (00:06)',
-        prompt:
-          'Hitunglah total volume media tanam (dalam liter) yang dibutuhkan untuk mengisi penuh 2 buah bak tanaman baru tersebut, dan tentukan berapa karung pupuk kompos yang diperlukan! Tuliskan langkah perhitungannya.',
-        options: [],
-        essayKeywords: [
-          '0.288|0,288|288',
-          '576',
-          '24',
-          'karung|liter',
-        ],
-        essaySampleAnswer:
-          'Volume 1 bak = 1,2 × 0,6 × 0,4 = 0,288 m³ = 288 liter. Untuk 2 bak = 2 × 288 = 576 liter. Banyak karung = 576 : 24 = 24 karung kompos.',
-        maxPoints: 15,
-      },
-      // Assessment 2 Questions
-      {
-        id: 'q-ats-1',
-        assessmentId: 'asm-ats-pai',
-        orderNumber: 1,
-        type: 'pg',
-        domain: 'PAI & Akhlak',
-        cognitiveLevel: 'L1 Pemahaman',
-        stimulusTitle: 'Kejujuran dalam Menuntut Ilmu',
-        stimulusPassage:
-          'Rasulullah SAW bersabda bahwa kejujuran membimbing kepada kebaikan, dan kebaikan mengantarkan ke surga. Saat mengerjakan ujian berbasis komputer (CBT) di madrasah, seorang siswa tetap menjaga integritas dengan tidak membuka catatan ataupun mencari jawaban di tab lain meskipun tidak diawasi langsung di sebelah kursinya.',
-        prompt:
-          'Perilaku siswa yang tidak menyontek dan tidak berpindah tab saat ujian mencerminkan sifat terpuji yaitu...',
-        options: [
-          { id: 'opt-a1a', label: 'A', text: 'Shiddiq (jujur) dan amanah' },
-          { id: 'opt-a1b', label: 'B', text: 'Riya dan takabur' },
-          { id: 'opt-a1c', label: 'C', text: 'Ghadab dan hasad' },
-          { id: 'opt-a1d', label: 'D', text: 'Israf dan tabdzir' },
-        ],
-        correctOptionId: 'opt-a1a',
-        maxPoints: 30,
-      },
-      {
-        id: 'q-ats-2',
-        assessmentId: 'asm-ats-pai',
-        orderNumber: 2,
-        type: 'pgk',
-        domain: 'PAI & Akhlak',
-        cognitiveLevel: 'L2 Penerapan',
-        stimulusTitle: 'Adab Belajar di Lingkungan Madrasah',
-        stimulusPassage:
-          'Siswa MI Ma\'arif Al Ihsan Soborejo dibiasakan berdoa sebelum belajar, menjaga kebersihan kelas, serta menghormati guru dan teman sebaya.',
-        imageUrl: '/src/assets/images/madrasah_campus_hero_1794802017792.jpg',
-        imageCaption: 'Lingkungan belajar yang asri di MI Ma\'arif Al Ihsan Soborejo.',
-        prompt: 'Pilihlah DUA perilaku yang mencerminkan adab terpuji siswa di madrasah!',
-        options: [
-          { id: 'opt-a2a', label: 'A', text: 'Mengucapkan salam dan mencium tangan guru saat bertemu di serambi.' },
-          { id: 'opt-a2b', label: 'B', text: 'Menyela pembicaraan teman yang sedang mengemukakan pendapat.' },
-          { id: 'opt-a2c', label: 'C', text: 'Merapikan sepatu di depan kelas dan menjaga kebersihan taman.' },
-          { id: 'opt-a2d', label: 'D', text: 'Meniru jawaban teman saat mengerjakan ulangan harian.' },
-        ],
-        correctOptionIds: ['opt-a2a', 'opt-a2c'],
-        maxPoints: 35,
-      },
-      {
-        id: 'q-ats-3',
-        assessmentId: 'asm-ats-pai',
-        orderNumber: 3,
-        type: 'essay',
-        domain: 'PAI & Akhlak',
-        cognitiveLevel: 'L3 Penalaran',
-        stimulusTitle: 'Refleksi Kejujuran Digital',
-        stimulusPassage:
-          'Kemajuan teknologi membuat ujian sekolah dapat dilakukan melalui komputer atau tablet. Namun, nilai yang tinggi hanya akan membawa keberkahan apabila diraih dengan usaha sendiri yang jujur.',
-        prompt:
-          'Mengapa kejujuran saat mengikuti asesmen CBT lebih berharga daripada nilai tinggi hasil kecurangan? Jelaskan pendapatmu dalam 2-3 kalimat!',
-        options: [],
-        essayKeywords: ['jujur|kejujuran', 'berkah|ilmu|kemampuan', 'usaha|mandiri|allah|amanah'],
-        essaySampleAnswer:
-          'Kejujuran menunjukkan kemampuan diri yang sesungguhnya dan diridhai Allah SWT sehingga ilmu menjadi berkah. Nilai tinggi dari kecurangan tidak mencerminkan pemahaman nyata.',
-        maxPoints: 35,
-      },
-      // Assessment 3 Questions
-      {
-        id: 'q-akm-1',
-        assessmentId: 'asm-akm-try',
-        orderNumber: 1,
-        type: 'pg',
-        domain: 'Numerasi',
-        cognitiveLevel: 'L3 Penalaran',
-        stimulusTitle: 'Debit Irigasi Terasering',
-        stimulusPassage:
-          'Saluran irigasi di Desa Soborejo mengalirkan air dengan debit 15 liter per detik untuk mengairi petak sawah terasering.',
-        imageUrl: '/src/assets/images/science_paddy_ecosystem_1794802018119.jpg',
-        imageCaption: 'Aliran irigasi sawah terasering.',
-        prompt:
-          'Berapa meter kubik (m³) volume air yang mengalir melalui saluran irigasi tersebut selama 10 menit?',
-        options: [
-          { id: 'opt-k1a', label: 'A', text: '0,9 m³' },
-          { id: 'opt-k1b', label: 'B', text: '9,0 m³' },
-          { id: 'opt-k1c', label: 'C', text: '90 m³' },
-          { id: 'opt-k1d', label: 'D', text: '900 m³' },
-        ],
-        correctOptionId: 'opt-k1b',
-        maxPoints: 50,
-      },
-      {
-        id: 'q-akm-2',
-        assessmentId: 'asm-akm-try',
-        orderNumber: 2,
-        type: 'essay',
-        domain: 'Literasi Membaca',
-        cognitiveLevel: 'L3 Penalaran',
-        stimulusTitle: 'Manfaat Taman Baca Desa',
-        stimulusPassage:
-          'Taman baca yang dikelola bersama oleh madrasah dan masyarakat desa membantu anak-anak memiliki akses terhadap buku bermutu tanpa harus pergi jauh ke kota.',
-        imageUrl: '/src/assets/images/literacy_reading_stimulus_1794802018035.jpg',
-        imageCaption: 'Siswa membaca buku cerita di taman baca.',
-        prompt:
-          'Tuliskan dua manfaat keberadaan taman baca di lingkungan madrasah desa bagi siswa!',
-        options: [],
-        essayKeywords: ['baca|literasi|minat', 'ilmu|wawasan|kosakata|pengetahuan', 'dekat|akses|mudah'],
-        essaySampleAnswer:
-          'Meningkatkan minat baca dan wawasan siswa serta memudahkan akses buku bermutu di desa.',
-        maxPoints: 50,
-      },
-    ],
-    submissions: [
-      {
-        id: 'sub-seed-1',
-        assessmentId: 'asm-asas-6',
-        assessmentTitle: 'Asesmen Sumatif Akhir Semester (ASAS) Gasal — Literasi & Numerasi',
-        studentId: 'stu-2',
-        studentNisn: '0134829102',
-        studentName: 'Aisyah Putri Ramadhani',
-        className: 'Kelas VI-A',
-        startedAt: '2026-11-12T01:00:00.000Z',
-        submittedAt: '2026-11-12T01:31:24.000Z',
-        durationSeconds: 1884,
-        violationCount: 0,
-        autoSubmittedBySecurity: false,
-        isLocked: false,
-        totalPointsEarned: 94.5,
-        totalPointsMax: 100,
-        finalScore: 94.5,
-        predicate: 'Sangat Baik',
-        domainBreakdown: [
-          { domain: 'Literasi Membaca', earned: 15, max: 15, percentage: 100 },
-          { domain: 'Numerasi', earned: 50, max: 50, percentage: 100 },
-          { domain: 'Literasi Sains', earned: 29.5, max: 35, percentage: 84 },
-        ],
-        gradedItems: [
-          {
-            questionId: 'q-asas-1',
-            orderNumber: 1,
-            type: 'pg',
-            domain: 'Literasi Membaca',
-            prompt:
-              'Berdasarkan wacana di atas, apa tujuan utama kegiatan bertukar ringkasan cerita setelah membaca selama lima belas menit?',
-            studentAnswerText:
-              'B. Melatih pemahaman isi bacaan dan memperkaya kosakata dengan menceritakan ulang memakai bahasa sendiri.',
-            maxPoints: 15,
-            earnedPoints: 15,
-            status: 'correct',
-            matchedKeywords: [],
-            missedKeywords: [],
-            feedback: 'Jawaban Pilihan Ganda tepat.',
-          },
-        ],
-        syncedToSupabase: true,
-        backedUpToDrive: true,
-      },
-      {
-        id: 'sub-seed-2',
-        assessmentId: 'asm-asas-6',
-        assessmentTitle: 'Asesmen Sumatif Akhir Semester (ASAS) Gasal — Literasi & Numerasi',
-        studentId: 'stu-3',
-        studentNisn: '0134829103',
-        studentName: 'Bagas Satria Nugroho',
-        className: 'Kelas VI-B',
-        startedAt: '2026-11-12T01:05:00.000Z',
-        submittedAt: '2026-11-12T01:42:10.000Z',
-        durationSeconds: 2230,
-        violationCount: 1,
-        autoSubmittedBySecurity: false,
-        isLocked: false,
-        totalPointsEarned: 81,
-        totalPointsMax: 100,
-        finalScore: 81,
-        predicate: 'Baik',
-        domainBreakdown: [
-          { domain: 'Literasi Membaca', earned: 15, max: 15, percentage: 100 },
-          { domain: 'Numerasi', earned: 36, max: 50, percentage: 72 },
-          { domain: 'Literasi Sains', earned: 30, max: 35, percentage: 86 },
-        ],
-        gradedItems: [],
-        syncedToSupabase: true,
-        backedUpToDrive: false,
-      },
-    ],
-    antiCheatLogs: [
-      {
-        id: 'log-seed-1',
-        assessmentId: 'asm-asas-6',
-        assessmentTitle: 'Asesmen Sumatif Akhir Semester (ASAS) Gasal — Literasi & Numerasi',
-        studentId: 'stu-3',
-        studentNisn: '0134829103',
-        studentName: 'Bagas Satria Nugroho',
-        className: 'Kelas VI-B',
-        eventType: 'TAB_SWITCH',
-        detail: 'Siswa sempat berpindah tab browser selama 4 detik lalu kembali ke ruang ujian.',
-        violationNumber: 1,
-        timestamp: '2026-11-12T01:18:45.000Z',
-      },
-    ],
-    driveAssets: [
-      {
-        id: 'drv-1',
-        name: 'literacy_reading_stimulus.jpg',
-        mimeType: 'image/jpeg',
-        mediaKind: 'image',
-        sizeBytes: 412800,
-        url: '/src/assets/images/literacy_reading_stimulus_1794802018035.jpg',
-        source: 'local_madrasah',
-        uploadedBy: 'Ustadz Ahmad Fauzi, S.Pd.I',
-        createdAt: '2026-11-10T06:30:00.000Z',
-      },
-      {
-        id: 'drv-2',
-        name: 'numeracy_prism_diagram.jpg',
-        mimeType: 'image/jpeg',
-        mediaKind: 'image',
-        sizeBytes: 389120,
-        url: '/src/assets/images/numeracy_prism_diagram_1794802018092.jpg',
-        source: 'local_madrasah',
-        uploadedBy: 'Ustadz Ahmad Fauzi, S.Pd.I',
-        createdAt: '2026-11-10T06:32:00.000Z',
-      },
-      {
-        id: 'drv-3',
-        name: 'science_paddy_ecosystem.jpg',
-        mimeType: 'image/jpeg',
-        mediaKind: 'image',
-        sizeBytes: 445200,
-        url: '/src/assets/images/science_paddy_ecosystem_1794802018119.jpg',
-        source: 'local_madrasah',
-        uploadedBy: 'Ustadz Ahmad Fauzi, S.Pd.I',
-        createdAt: '2026-11-10T06:35:00.000Z',
-      },
-      {
-        id: 'drv-4',
-        name: 'stimulus_ekosistem_sawah.mp4',
-        mimeType: 'video/mp4',
-        mediaKind: 'video',
-        sizeBytes: 1714176,
-        url: '/media/stimulus_ekosistem_sawah.mp4',
-        source: 'local_madrasah',
-        uploadedBy: 'Ustadz Ahmad Fauzi, S.Pd.I',
-        createdAt: '2026-11-10T06:40:00.000Z',
-      },
-      {
-        id: 'drv-5',
-        name: 'stimulus_geometri_gazebo.mp4',
-        mimeType: 'video/mp4',
-        mediaKind: 'video',
-        sizeBytes: 954368,
-        url: '/media/stimulus_geometri_gazebo.mp4',
-        source: 'local_madrasah',
-        uploadedBy: 'Ustadz Ahmad Fauzi, S.Pd.I',
-        createdAt: '2026-11-10T06:42:00.000Z',
-      },
-    ],
+    id: 'adm-default',
+    username: 'admin',
+    name: 'Administrator Madrasah',
+    title: 'Administrator Utama & Kepala Proktor',
+    role: 'admin',
+    subjectArea: 'Manajemen Madrasah',
+    password: hashPassword('admin'),
+  };
+}
+
+function createEmptyStore(): DatabaseSchema {
+  return {
+    admins: [createDefaultAdmin()],
+    students: [],
+    assessments: [],
+    questions: [],
+    submissions: [],
+    antiCheatLogs: [],
+    driveAssets: [],
     siteSettings: { ...DEFAULT_SITE_SETTINGS },
   };
 }
@@ -648,95 +98,29 @@ function ensureLocalStore(): DatabaseSchema {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
   if (!fs.existsSync(DB_FILE)) {
-    const initial = createInitialData();
-    fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2), 'utf-8');
-    return initial;
+    const empty = createEmptyStore();
+    fs.writeFileSync(DB_FILE, JSON.stringify(empty, null, 2), 'utf-8');
+    return empty;
   }
   const raw = fs.readFileSync(DB_FILE, 'utf-8');
-  const parsed = JSON.parse(raw) as DatabaseSchema;
-
-  // Non-destructive backfill for assignment schedules, Kelas 1-6, and siteSettings
-  let dirty = false;
-  const seed = createInitialData();
-  if (!parsed.siteSettings) {
-    parsed.siteSettings = { ...DEFAULT_SITE_SETTINGS };
-    dirty = true;
-  } else {
-    const ss = parsed.siteSettings;
-    if (ss.appName === 'AISSA' || ss.appName === 'ASET') {
-      ss.appName = DEFAULT_SITE_SETTINGS.appName;
-      dirty = true;
-    }
-    if (
-      ss.tagline &&
-      (ss.tagline.includes('Al Ihsan Soborejo Smart Asessment') ||
-        ss.tagline.includes('Al Ihsan Smart Evaluation & Test'))
-    ) {
-      ss.tagline = ss.tagline
-        .replace('Al Ihsan Soborejo Smart Asessment', 'Al Ihsan Smart Asesment')
-        .replace('Al Ihsan Smart Evaluation & Test', 'Al Ihsan Smart Asesment');
-      dirty = true;
-    }
-    if (
-      ss.eyebrowText &&
-      (ss.eyebrowText.includes('Al Ihsan Soborejo Smart Asessment') ||
-        ss.eyebrowText.includes('Al Ihsan Smart Evaluation & Test'))
-    ) {
-      ss.eyebrowText = ss.eyebrowText
-        .replace('Al Ihsan Soborejo Smart Asessment', 'Al Ihsan Smart Asesment')
-        .replace('Al Ihsan Smart Evaluation & Test', 'Al Ihsan Smart Asesment');
-      dirty = true;
-    }
-    if (ss.heroSubtitle && (ss.heroSubtitle.includes('AISSA') || ss.heroSubtitle.includes('ASET'))) {
-      ss.heroSubtitle = ss.heroSubtitle.replace(/AISSA|ASET/g, 'AISA');
-      dirty = true;
-    }
-    if (
-      ss.loginHeading &&
-      (ss.loginHeading.includes('Al Ihsan Soborejo Smart Asessment') ||
-        ss.loginHeading.includes('Al Ihsan Smart Evaluation & Test'))
-    ) {
-      ss.loginHeading = ss.loginHeading
-        .replace('Al Ihsan Soborejo Smart Asessment', 'Al Ihsan Smart Asesment')
-        .replace('Al Ihsan Smart Evaluation & Test', 'Al Ihsan Smart Asesment');
-      dirty = true;
-    }
-    if (!ss.logoUrl || ss.logoUrl.includes('aset_madrasah_logo_')) {
-      ss.logoUrl = DEFAULT_SITE_SETTINGS.logoUrl;
-      dirty = true;
-    }
+  const parsed = JSON.parse(raw) as Partial<DatabaseSchema>;
+  const normalized: DatabaseSchema = {
+    admins: Array.isArray(parsed.admins) ? parsed.admins : [],
+    students: Array.isArray(parsed.students) ? parsed.students : [],
+    assessments: Array.isArray(parsed.assessments) ? parsed.assessments : [],
+    questions: Array.isArray(parsed.questions) ? parsed.questions : [],
+    submissions: Array.isArray(parsed.submissions) ? parsed.submissions : [],
+    antiCheatLogs: Array.isArray(parsed.antiCheatLogs) ? parsed.antiCheatLogs : [],
+    driveAssets: Array.isArray(parsed.driveAssets) ? parsed.driveAssets : [],
+    siteSettings: parsed.siteSettings
+      ? { ...DEFAULT_SITE_SETTINGS, ...parsed.siteSettings, showQuickDemo: false }
+      : { ...DEFAULT_SITE_SETTINGS },
+  };
+  if (!normalized.admins.some((a) => a.role === 'admin')) {
+    normalized.admins.unshift(createDefaultAdmin());
+    saveLocalStore(normalized);
   }
-  for (const a of parsed.assessments) {
-    if (!a.assignedTeacherId) {
-      const match = seed.assessments.find((sa) => sa.id === a.id);
-      a.assignedTeacherId = match?.assignedTeacherId || 'guru-1';
-      a.assignedTeacherName = match?.assignedTeacherName || 'Ustadz Ahmad Fauzi, S.Pd.I';
-      a.scheduledDate = match?.scheduledDate || '2026-12-07';
-      a.scheduleWindow = match?.scheduleWindow || '07.30 - 09.00 WIB';
-      if (a.gradeLevel === 'Kelas VI') a.gradeLevel = 'Kelas 6';
-      if (a.gradeLevel === 'Kelas V & VI') a.gradeLevel = 'Kelas 5';
-      dirty = true;
-    }
-  }
-  for (const s of parsed.students) {
-    if (s.className.startsWith('Kelas VI')) {
-      s.className = s.className.replace('Kelas VI', 'Kelas 6');
-      dirty = true;
-    } else if (s.className.startsWith('Kelas V')) {
-      s.className = s.className.replace('Kelas V', 'Kelas 5');
-      dirty = true;
-    }
-  }
-  for (const seedStudent of seed.students) {
-    if (!parsed.students.some((s) => s.id === seedStudent.id)) {
-      parsed.students.push(seedStudent);
-      dirty = true;
-    }
-  }
-  if (dirty) {
-    saveLocalStore(parsed);
-  }
-  return parsed;
+  return normalized;
 }
 
 function saveLocalStore(data: DatabaseSchema) {
@@ -764,15 +148,35 @@ const SUBMISSION_DETAIL_COLUMNS = `${SUBMISSION_SUMMARY_COLUMNS},graded_items`;
 const ANTI_CHEAT_COLUMNS =
   'id,assessment_id,assessment_title,student_id,student_nisn,student_name,class_name,event_type,detail,violation_number,timestamp';
 const STUDENT_COLUMNS = 'id,nisn,name,class_name,pin';
+const ADMIN_COLUMNS = 'id,username,name,title,role,subject_area,password';
 const DRIVE_ASSET_COLUMNS =
   'id,name,mime_type,media_kind,size_bytes,url,drive_file_id,source,uploaded_by,created_at';
 const SITE_SETTINGS_COLUMNS =
   'id,app_name,school_name,tagline,eyebrow_text,hero_title,hero_subtitle,login_heading,logo_url,background_image_url,show_quick_demo,updated_at';
 
+const EXPECTED_SUPABASE_TABLES = [
+  'assessments',
+  'questions',
+  'students',
+  'submissions',
+  'anti_cheat_logs',
+  'drive_assets',
+  'admins',
+  'site_settings',
+] as const;
+
 let supabaseClient: SupabaseClient | null = null;
-function getSupabase(): SupabaseClient | null {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+function getSupabaseSecretKey(): string {
+  return (
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    ''
+  ).trim();
+}
+
+export function getSupabase(): SupabaseClient | null {
+  const url = (process.env.SUPABASE_URL || '').trim();
+  const key = getSupabaseSecretKey();
   if (!url || !key) return null;
   if (!supabaseClient) {
     supabaseClient = createClient(url, key, { auth: { persistSession: false } });
@@ -800,10 +204,12 @@ export function invalidateDbCache() {
 }
 
 export function getIntegrationStatus(): IntegrationStatus {
-  const supabaseUrl = process.env.SUPABASE_URL || '';
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-  const gasUrl = process.env.GAS_DRIVE_WEBAPP_URL || '';
-  const gasFolder = process.env.GAS_DRIVE_FOLDER_ID || '';
+  const supabaseUrl = (process.env.SUPABASE_URL || '').trim();
+  const supabaseKey = getSupabaseSecretKey();
+  const supabasePublishable = (process.env.SUPABASE_PUBLISHABLE_KEY || '').trim();
+  const supabaseJwksUrl = (process.env.SUPABASE_JWKS_URL || '').trim();
+  const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
+  const gasFolder = (process.env.GAS_DRIVE_FOLDER_ID || '').trim();
 
   let host: string | null = null;
   if (supabaseUrl) {
@@ -818,9 +224,41 @@ export function getIntegrationStatus(): IntegrationStatus {
   return {
     supabaseConfigured,
     supabaseProjectHost: host,
+    supabasePublishableConfigured: Boolean(supabasePublishable),
+    supabaseJwksUrl: supabaseJwksUrl || null,
+    supabaseTablesReady: false,
+    supabaseMissingTables: [],
     gasDriveConfigured: Boolean(gasUrl),
     gasFolderId: gasFolder || null,
     storageMode: supabaseConfigured ? 'supabase' : 'local_persistent',
+  };
+}
+
+export async function getDetailedIntegrationStatus(): Promise<IntegrationStatus> {
+  const base = getIntegrationStatus();
+  const sb = getSupabase();
+  if (!sb) {
+    return base;
+  }
+
+  const missingTables: string[] = [];
+  await Promise.all(
+    EXPECTED_SUPABASE_TABLES.map(async (table) => {
+      try {
+        const { error } = await sb.from(table).select('*').limit(1);
+        if (error) {
+          missingTables.push(table);
+        }
+      } catch {
+        missingTables.push(table);
+      }
+    })
+  );
+
+  return {
+    ...base,
+    supabaseTablesReady: missingTables.length === 0,
+    supabaseMissingTables: missingTables.sort(),
   };
 }
 
@@ -982,6 +420,30 @@ function mapSubmissionToDb(s: SubmissionRecord) {
   };
 }
 
+function mapAdminFromDb(row: Record<string, any>): AdminAccount {
+  return {
+    id: row.id,
+    username: row.username,
+    name: row.name,
+    title: row.title,
+    role: row.role === 'admin' ? 'admin' : 'guru',
+    subjectArea: row.subject_area || undefined,
+    password: row.password,
+  };
+}
+
+function mapAdminToDb(a: AdminAccount) {
+  return {
+    id: a.id,
+    username: a.username,
+    name: a.name,
+    title: a.title,
+    role: a.role,
+    subject_area: a.subjectArea || null,
+    password: a.password,
+  };
+}
+
 function isCacheFresh(ts: number, ttl: number): boolean {
   return ts > 0 && Date.now() - ts < ttl;
 }
@@ -1007,8 +469,7 @@ export async function loadDb(options?: { forceFresh?: boolean }): Promise<Databa
 
   const fetchPromise = (async (): Promise<DatabaseSchema> => {
     try {
-      // Explicit column projections: omits heavy `graded_items` JSONB from list load & caps logs/assets
-      const [asmRes, qRes, subRes, logRes, stuRes, drvRes] = await Promise.all([
+      const [asmRes, qRes, subRes, logRes, stuRes, drvRes, admRes] = await Promise.all([
         sb
           .from('assessments')
           .select(ASSESSMENT_COLUMNS)
@@ -1033,6 +494,7 @@ export async function loadDb(options?: { forceFresh?: boolean }): Promise<Databa
           .select(DRIVE_ASSET_COLUMNS)
           .order('created_at', { ascending: false })
           .limit(200),
+        sb.from('admins').select(ADMIN_COLUMNS),
       ]);
 
       if (asmRes.error || qRes.error || subRes.error) {
@@ -1041,31 +503,25 @@ export async function loadDb(options?: { forceFresh?: boolean }): Promise<Databa
         return local;
       }
 
-      // Seed Supabase automatically if tables exist and are empty
-      if ((asmRes.data || []).length === 0) {
-        await Promise.all([
-          sb.from('assessments').upsert(local.assessments.map(mapAssessmentToDb)),
-          sb.from('questions').upsert(local.questions.map(mapQuestionToDb)),
-          sb.from('students').upsert(
-            local.students.map((st) => ({
-              id: st.id,
-              nisn: st.nisn,
-              name: st.name,
-              class_name: st.className,
-              pin: st.pin,
-            }))
-          ),
-          sb.from('submissions').upsert(local.submissions.map(mapSubmissionToDb)),
-        ]);
-        cachedDb = local;
-        cachedDbAt = Date.now();
-        return local;
+      let resolvedAdmins: AdminAccount[] =
+        !admRes.error && Array.isArray(admRes.data)
+          ? admRes.data.map(mapAdminFromDb)
+          : local.admins;
+
+      if (!admRes.error && Array.isArray(admRes.data) && !resolvedAdmins.some((a) => a.role === 'admin')) {
+        const defaultAdmin = local.admins.find((a) => a.role === 'admin') || createDefaultAdmin();
+        resolvedAdmins = [defaultAdmin, ...resolvedAdmins];
+        try {
+          await sb.from('admins').upsert(mapAdminToDb(defaultAdmin));
+        } catch {
+          // Ignore if RLS/schema prevents write
+        }
       }
 
       const loaded: DatabaseSchema = {
-        admins: local.admins,
+        admins: resolvedAdmins,
         students:
-          stuRes.data && stuRes.data.length > 0
+          !stuRes.error && Array.isArray(stuRes.data)
             ? stuRes.data.map((r: any) => ({
                 id: r.id,
                 nisn: r.nisn,
@@ -1077,21 +533,24 @@ export async function loadDb(options?: { forceFresh?: boolean }): Promise<Databa
         assessments: (asmRes.data || []).map(mapAssessmentFromDb),
         questions: (qRes.data || []).map(mapQuestionFromDb),
         submissions: (subRes.data || []).map(mapSubmissionFromDb),
-        antiCheatLogs: (logRes.data || []).map((r: any) => ({
-          id: r.id,
-          assessmentId: r.assessment_id,
-          assessmentTitle: r.assessment_title,
-          studentId: r.student_id,
-          studentNisn: r.student_nisn,
-          studentName: r.student_name,
-          className: r.class_name,
-          eventType: r.event_type,
-          detail: r.detail,
-          violationNumber: r.violation_number,
-          timestamp: r.timestamp,
-        })),
+        antiCheatLogs:
+          !logRes.error && Array.isArray(logRes.data)
+            ? logRes.data.map((r: any) => ({
+                id: r.id,
+                assessmentId: r.assessment_id,
+                assessmentTitle: r.assessment_title,
+                studentId: r.student_id,
+                studentNisn: r.student_nisn,
+                studentName: r.student_name,
+                className: r.class_name,
+                eventType: r.event_type,
+                detail: r.detail,
+                violationNumber: r.violation_number,
+                timestamp: r.timestamp,
+              }))
+            : local.antiCheatLogs,
         driveAssets:
-          drvRes.data && drvRes.data.length > 0
+          !drvRes.error && Array.isArray(drvRes.data)
             ? drvRes.data.map((r: any) => ({
                 id: r.id,
                 name: r.name,
@@ -1125,7 +584,30 @@ export async function loadDb(options?: { forceFresh?: boolean }): Promise<Databa
   return fetchPromise;
 }
 
-// Lightweight targeted auth lookup when cache is cold (1 row instead of 6 tables)
+export async function hasAnyAdminAccount(): Promise<boolean> {
+  if ((process.env.ADMIN_PASSCODE || '').trim().length > 0) {
+    return true;
+  }
+  const sb = getSupabase();
+  if (sb) {
+    try {
+      const { data, error } = await sb
+        .from('admins')
+        .select('id')
+        .eq('role', 'admin')
+        .limit(1);
+      if (!error && Array.isArray(data)) {
+        if (data.length > 0) return true;
+        // Also check local fallback in case admins table was just created
+      }
+    } catch {
+      // Fallback to local check
+    }
+  }
+  const db = await loadDb();
+  return db.admins.some((a) => a.role === 'admin');
+}
+
 export async function authenticateStudent(
   nisn: string,
   pin: string
@@ -1142,8 +624,8 @@ export async function authenticateStudent(
         .select(STUDENT_COLUMNS)
         .eq('nisn', nisn)
         .maybeSingle();
-      if (!error && data) {
-        if (data.pin === pin) {
+      if (!error) {
+        if (data && data.pin === pin) {
           return {
             id: data.id,
             nisn: data.nisn,
@@ -1163,7 +645,6 @@ export async function authenticateStudent(
   return local.students.find((s) => s.nisn === nisn && s.pin === pin) || null;
 }
 
-// Targeted submission detail loader (fetches heavy `graded_items` only when opening transcript/drawer)
 export async function getSubmissionById(id: string): Promise<SubmissionRecord | null> {
   if (cachedDb) {
     const inCache = cachedDb.submissions.find((s) => s.id === id);
@@ -1254,7 +735,6 @@ export async function upsertQuestion(question: Question): Promise<Question> {
   return question;
 }
 
-// Single-request batch upsert for imported questions (eliminates N roundtrips)
 export async function upsertQuestionsBatch(questions: Question[]): Promise<Question[]> {
   if (questions.length === 0) return [];
   const dbData = ensureLocalStore();
@@ -1431,21 +911,37 @@ export async function deleteStudentById(id: string): Promise<void> {
 }
 
 export async function upsertStaff(staff: AdminAccount): Promise<AdminAccount> {
+  const storedPassword = staff.password.startsWith('scrypt:')
+    ? staff.password
+    : hashPassword(staff.password);
+  const record: AdminAccount = { ...staff, password: storedPassword };
+
   const dbData = ensureLocalStore();
-  const idx = dbData.admins.findIndex((a) => a.id === staff.id || a.username === staff.username);
-  if (idx >= 0) dbData.admins[idx] = staff;
-  else dbData.admins.push(staff);
+  const idx = dbData.admins.findIndex(
+    (a) => a.id === record.id || a.username.toLowerCase() === record.username.toLowerCase()
+  );
+  if (idx >= 0) dbData.admins[idx] = record;
+  else dbData.admins.push(record);
   saveLocalStore(dbData);
 
   if (cachedDb) {
     const cIdx = cachedDb.admins.findIndex(
-      (a) => a.id === staff.id || a.username === staff.username
+      (a) => a.id === record.id || a.username.toLowerCase() === record.username.toLowerCase()
     );
-    if (cIdx >= 0) cachedDb.admins[cIdx] = staff;
-    else cachedDb.admins.push(staff);
+    if (cIdx >= 0) cachedDb.admins[cIdx] = record;
+    else cachedDb.admins.push(record);
   }
 
-  return staff;
+  const sb = getSupabase();
+  if (sb) {
+    try {
+      await sb.from('admins').upsert(mapAdminToDb(record));
+    } catch {
+      // Graceful fallback if public.admins table has not been migrated yet
+    }
+  }
+
+  return record;
 }
 
 export async function deleteStaffById(id: string): Promise<void> {
@@ -1455,6 +951,15 @@ export async function deleteStaffById(id: string): Promise<void> {
 
   if (cachedDb) {
     cachedDb.admins = cachedDb.admins.filter((a) => a.id !== id);
+  }
+
+  const sb = getSupabase();
+  if (sb) {
+    try {
+      await sb.from('admins').delete().eq('id', id);
+    } catch {
+      // Graceful fallback
+    }
   }
 }
 
@@ -1519,35 +1024,18 @@ export async function getSiteSettings(): Promise<SiteSettings> {
           .eq('id', 'default')
           .maybeSingle();
         if (!error && data) {
-          const rawAppName = data.app_name || DEFAULT_SITE_SETTINGS.appName;
-          const rawLogo = data.logo_url || '';
           const resolved: SiteSettings = {
-            appName:
-              rawAppName === 'AISSA' || rawAppName === 'ASET'
-                ? DEFAULT_SITE_SETTINGS.appName
-                : rawAppName,
+            appName: data.app_name || DEFAULT_SITE_SETTINGS.appName,
             schoolName: data.school_name || DEFAULT_SITE_SETTINGS.schoolName,
-            tagline: (data.tagline || DEFAULT_SITE_SETTINGS.tagline)
-              .replace('Al Ihsan Soborejo Smart Asessment', 'Al Ihsan Smart Asesment')
-              .replace('Al Ihsan Smart Evaluation & Test', 'Al Ihsan Smart Asesment'),
-            eyebrowText: (data.eyebrow_text || DEFAULT_SITE_SETTINGS.eyebrowText)
-              .replace('Al Ihsan Soborejo Smart Asessment', 'Al Ihsan Smart Asesment')
-              .replace('Al Ihsan Smart Evaluation & Test', 'Al Ihsan Smart Asesment'),
+            tagline: data.tagline || DEFAULT_SITE_SETTINGS.tagline,
+            eyebrowText: data.eyebrow_text || DEFAULT_SITE_SETTINGS.eyebrowText,
             heroTitle: data.hero_title || DEFAULT_SITE_SETTINGS.heroTitle,
-            heroSubtitle: (data.hero_subtitle || DEFAULT_SITE_SETTINGS.heroSubtitle).replace(
-              /AISSA|ASET/g,
-              'AISA'
-            ),
-            loginHeading: (data.login_heading || DEFAULT_SITE_SETTINGS.loginHeading)
-              .replace('Al Ihsan Soborejo Smart Asessment', 'Al Ihsan Smart Asesment')
-              .replace('Al Ihsan Smart Evaluation & Test', 'Al Ihsan Smart Asesment'),
-            logoUrl:
-              !rawLogo || rawLogo.includes('aset_madrasah_logo_')
-                ? DEFAULT_SITE_SETTINGS.logoUrl
-                : rawLogo,
+            heroSubtitle: data.hero_subtitle || DEFAULT_SITE_SETTINGS.heroSubtitle,
+            loginHeading: data.login_heading || DEFAULT_SITE_SETTINGS.loginHeading,
+            logoUrl: data.logo_url || DEFAULT_SITE_SETTINGS.logoUrl,
             backgroundImageUrl:
               data.background_image_url ?? DEFAULT_SITE_SETTINGS.backgroundImageUrl,
-            showQuickDemo: data.show_quick_demo ?? true,
+            showQuickDemo: false,
             updatedAt: data.updated_at || local.siteSettings.updatedAt,
           };
           cachedSettings = resolved;
@@ -1577,6 +1065,7 @@ export async function saveSiteSettings(next: SiteSettings): Promise<SiteSettings
   const merged: SiteSettings = {
     ...DEFAULT_SITE_SETTINGS,
     ...next,
+    showQuickDemo: false,
     updatedAt: new Date().toISOString(),
   };
   dbData.siteSettings = merged;
@@ -1602,7 +1091,7 @@ export async function saveSiteSettings(next: SiteSettings): Promise<SiteSettings
         login_heading: merged.loginHeading,
         logo_url: merged.logoUrl,
         background_image_url: merged.backgroundImageUrl,
-        show_quick_demo: merged.showQuickDemo,
+        show_quick_demo: false,
         updated_at: merged.updatedAt,
       });
     } catch {
@@ -1611,4 +1100,3 @@ export async function saveSiteSettings(next: SiteSettings): Promise<SiteSettings
   }
   return merged;
 }
-

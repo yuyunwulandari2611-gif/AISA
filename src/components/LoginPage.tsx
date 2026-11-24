@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Eye, EyeOff, Lock } from 'lucide-react';
+import { Eye, EyeOff, Lock, ShieldCheck } from 'lucide-react';
 import type { SessionUser, SiteSettings } from '../types/cbt.ts';
 
 interface LoginPageProps {
   siteSettings?: SiteSettings | null;
-  onLoginSuccess: (user: SessionUser) => void;
+  onLoginSuccess: (user: SessionUser, token: string) => void;
 }
 
 const FALLBACK_SETTINGS: SiteSettings = {
@@ -18,12 +18,19 @@ const FALLBACK_SETTINGS: SiteSettings = {
   loginHeading: 'Masuk ke Al Ihsan Smart Asesment',
   logoUrl: '/src/assets/images/aisa_madrasah_logo_1795493183530.jpg',
   backgroundImageUrl: '/src/assets/images/madrasah_campus_hero_1794802017792.jpg',
-  showQuickDemo: true,
+  showQuickDemo: false,
   updatedAt: '',
 };
 
 export const LoginPage: React.FC<LoginPageProps> = ({ siteSettings, onLoginSuccess }) => {
   const settings = siteSettings || FALLBACK_SETTINGS;
+
+  const [needsAdminSetup, setNeedsAdminSetup] = useState(false);
+  const [setupName, setSetupName] = useState('');
+  const [setupUsername, setSetupUsername] = useState('');
+  const [setupTitle, setSetupTitle] = useState('Administrator Utama & Kepala Proktor');
+  const [setupPassword, setSetupPassword] = useState('');
+  const [setupConfirm, setSetupConfirm] = useState('');
 
   const [identifier, setIdentifier] = useState('');
   const [secret, setSecret] = useState('');
@@ -40,6 +47,17 @@ export const LoginPage: React.FC<LoginPageProps> = ({ siteSettings, onLoginSucce
   useEffect(() => {
     setLogoImgFailed(false);
   }, [settings.logoUrl]);
+
+  useEffect(() => {
+    fetch('/api/auth/bootstrap-status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && typeof data.needsAdminSetup === 'boolean') {
+          setNeedsAdminSetup(data.needsAdminSetup);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const submitCredentials = async (idToUse: string, secretToUse: string) => {
     setError(null);
@@ -59,7 +77,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ siteSettings, onLoginSucce
         setError(data.error || 'Gagal masuk ke sistem.');
         return;
       }
-      onLoginSuccess(data.user);
+      onLoginSuccess(data.user, data.token);
     } catch {
       setError('Koneksi ke server terputus. Silakan coba kembali.');
     } finally {
@@ -74,6 +92,45 @@ export const LoginPage: React.FC<LoginPageProps> = ({ siteSettings, onLoginSucce
       return;
     }
     submitCredentials(identifier, secret);
+  };
+
+  const handleBootstrapAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (!setupName.trim() || !setupUsername.trim() || setupPassword.length < 6) {
+      setError('Nama lengkap, username, dan kata sandi minimal 6 karakter wajib diisi.');
+      return;
+    }
+    if (setupPassword !== setupConfirm) {
+      setError('Konfirmasi kata sandi tidak cocok.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth/bootstrap-admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: setupName.trim(),
+          username: setupUsername.trim(),
+          title: setupTitle.trim(),
+          password: setupPassword,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Gagal mengaktifkan akun Administrator.');
+        if (res.status === 409) {
+          setNeedsAdminSetup(false);
+        }
+        return;
+      }
+      onLoginSuccess(data.user, data.token);
+    } catch {
+      setError('Koneksi ke server terputus. Silakan coba kembali.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -181,82 +238,176 @@ export const LoginPage: React.FC<LoginPageProps> = ({ siteSettings, onLoginSucce
               </div>
             )}
             <p className="text-xs font-semibold tracking-wide text-emerald-700 mb-1.5">
-              Gerbang Masuk {settings.appName}
+              {needsAdminSetup ? 'Aktivasi Awal Sistem' : `Gerbang Masuk ${settings.appName}`}
             </p>
             <h2 className="text-2xl font-bold text-slate-900 tracking-tight text-balance">
-              {settings.loginHeading}
+              {needsAdminSetup ? 'Buat Akun Administrator Pertama' : settings.loginHeading}
             </h2>
             <p className="text-sm text-slate-600 mt-1.5">
-              Masukkan NISN &amp; PIN untuk Peserta Ujian, atau Username &amp; Kata Sandi untuk Guru
-              dan Administrator.
+              {needsAdminSetup
+                ? 'Belum ada akun Administrator terdaftar. Tetapkan akun Admin utama untuk mulai mengelola jadwal, guru, dan peserta ujian.'
+                : 'Masukkan NISN & PIN untuk Peserta Ujian, atau Username & Kata Sandi untuk Guru dan Administrator.'}
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label
-                htmlFor="login-identifier"
-                className="block text-sm font-medium text-slate-800 mb-1.5"
-              >
-                NISN / Username / NIP
-              </label>
-              <input
-                id="login-identifier"
-                type="text"
-                autoComplete="username"
-                value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="Masukkan NISN peserta atau username"
-                className="w-full px-3.5 py-2.5 text-sm font-mono bg-white border border-slate-300 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
-              />
-            </div>
-
-            <div>
-              <label
-                htmlFor="login-secret"
-                className="block text-sm font-medium text-slate-800 mb-1.5"
-              >
-                PIN Ujian / Kata Sandi
-              </label>
-              <div className="relative">
+          {needsAdminSetup ? (
+            <form onSubmit={handleBootstrapAdmin} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-800 mb-1.5">
+                  Nama Lengkap &amp; Gelar
+                </label>
                 <input
-                  id="login-secret"
-                  type={showSecret ? 'text' : 'password'}
-                  autoComplete="current-password"
-                  value={secret}
-                  onChange={(e) => setSecret(e.target.value)}
-                  placeholder="Masukkan PIN atau kata sandi"
-                  className="w-full px-3.5 py-2.5 pr-11 text-sm font-mono bg-white border border-slate-300 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
+                  type="text"
+                  required
+                  value={setupName}
+                  onChange={(e) => setSetupName(e.target.value)}
+                  placeholder="Nama kepala proktor / administrator"
+                  className="w-full px-3.5 py-2.5 text-sm bg-white border border-slate-300 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowSecret((s) => !s)}
-                  aria-label={showSecret ? 'Sembunyikan sandi' : 'Tampilkan sandi'}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-slate-800 mb-1.5">
+                    Username Admin
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={setupUsername}
+                    onChange={(e) => setSetupUsername(e.target.value)}
+                    placeholder="Contoh: admin"
+                    className="w-full px-3.5 py-2.5 text-sm font-mono bg-white border border-slate-300 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-800 mb-1.5">
+                    Jabatan
+                  </label>
+                  <input
+                    type="text"
+                    value={setupTitle}
+                    onChange={(e) => setSetupTitle(e.target.value)}
+                    className="w-full px-3.5 py-2.5 text-sm bg-white border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-800 mb-1.5">
+                  Kata Sandi (minimal 6 karakter)
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={setupPassword}
+                  onChange={(e) => setSetupPassword(e.target.value)}
+                  placeholder="Buat kata sandi administrator"
+                  className="w-full px-3.5 py-2.5 text-sm font-mono bg-white border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-800 mb-1.5">
+                  Konfirmasi Kata Sandi
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={setupConfirm}
+                  onChange={(e) => setSetupConfirm(e.target.value)}
+                  placeholder="Ulangi kata sandi"
+                  className="w-full px-3.5 py-2.5 text-sm font-mono bg-white border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
+                />
+              </div>
+
+              {error && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm"
                 >
-                  {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
+                  {error}
+                </div>
+              )}
 
-            {error && (
-              <div
-                role="alert"
-                className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm"
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3 px-4 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer"
               >
-                {error}
+                <ShieldCheck className="w-4 h-4" />
+                <span>{loading ? 'Mengaktifkan...' : 'Aktifkan Administrator & Masuk'}</span>
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="login-identifier"
+                  className="block text-sm font-medium text-slate-800 mb-1.5"
+                >
+                  NISN / Username / NIP
+                </label>
+                <input
+                  id="login-identifier"
+                  type="text"
+                  autoComplete="username"
+                  value={identifier}
+                  onChange={(e) => setIdentifier(e.target.value)}
+                  placeholder="Masukkan NISN peserta atau username"
+                  className="w-full px-3.5 py-2.5 text-sm font-mono bg-white border border-slate-300 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
+                />
               </div>
-            )}
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-3 px-4 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <Lock className="w-4 h-4" />
-              <span>{loading ? 'Memverifikasi Akun...' : `Masuk ke ${settings.appName}`}</span>
-            </button>
-          </form>
+              <div>
+                <label
+                  htmlFor="login-secret"
+                  className="block text-sm font-medium text-slate-800 mb-1.5"
+                >
+                  PIN Ujian / Kata Sandi
+                </label>
+                <div className="relative">
+                  <input
+                    id="login-secret"
+                    type={showSecret ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={secret}
+                    onChange={(e) => setSecret(e.target.value)}
+                    placeholder="Masukkan PIN atau kata sandi"
+                    className="w-full px-3.5 py-2.5 pr-11 text-sm font-mono bg-white border border-slate-300 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSecret((s) => !s)}
+                    aria-label={showSecret ? 'Sembunyikan sandi' : 'Tampilkan sandi'}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+                  >
+                    {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              {error && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm"
+                >
+                  {error}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3 px-4 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Lock className="w-4 h-4" />
+                <span>{loading ? 'Memverifikasi Akun...' : `Masuk ke ${settings.appName}`}</span>
+              </button>
+            </form>
+          )}
         </div>
       </div>
     </div>

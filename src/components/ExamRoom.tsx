@@ -19,6 +19,7 @@ import type {
   StudentAnswerPayload,
   SubmissionRecord,
 } from '../types/cbt.ts';
+import { authFetch } from '../lib/authClient.ts';
 
 interface ExamRoomProps {
   user: SessionUser;
@@ -72,15 +73,11 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
         if (document.fullscreenElement && document.exitFullscreen) {
           await document.exitFullscreen().catch(() => {});
         }
-        const res = await fetch('/api/exam/submit', {
+        const res = await authFetch('/api/exam/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             assessmentId: assessment.id,
-            studentId: user.id,
-            studentNisn: user.identifier,
-            studentName: user.name,
-            className: user.className || 'Kelas VI',
             startedAt,
             durationSeconds,
             violationCount: violationCountRef.current,
@@ -96,7 +93,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
         setSubmitting(false);
       }
     },
-    [answers, assessment.id, onSubmitted, questions, startedAt, user]
+    [answers, assessment.id, onSubmitted, questions, startedAt]
   );
 
   const recordViolation = useCallback(
@@ -111,16 +108,12 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       violationCountRef.current = nextCount;
       setViolationCount(nextCount);
 
-      fetch('/api/anti-cheat/log', {
+      authFetch('/api/anti-cheat/log', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           assessmentId: assessment.id,
           assessmentTitle: assessment.title,
-          studentId: user.id,
-          studentNisn: user.identifier,
-          studentName: user.name,
-          className: user.className || 'Kelas VI',
           eventType: nextCount >= assessment.maxViolations ? 'AUTO_LOCKOUT' : eventType,
           detail,
           violationNumber: nextCount,

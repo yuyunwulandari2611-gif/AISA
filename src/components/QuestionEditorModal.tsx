@@ -17,6 +17,7 @@ import type {
   QuestionOption,
   QuestionType,
 } from '../types/cbt.ts';
+import { authFetch } from '../lib/authClient.ts';
 
 interface QuestionEditorModalProps {
   assessmentId: string;
@@ -115,7 +116,7 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
       const mimeType =
         file.type || (target === 'video' ? 'video/mp4' : 'image/png');
 
-      const res = await fetch('/api/drive/upload', {
+      const res = await authFetch('/api/drive/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

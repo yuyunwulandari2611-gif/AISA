@@ -190,6 +190,10 @@ export interface DriveAsset {
 export interface IntegrationStatus {
   supabaseConfigured: boolean;
   supabaseProjectHost: string | null;
+  supabasePublishableConfigured: boolean;
+  supabaseJwksUrl: string | null;
+  supabaseTablesReady: boolean;
+  supabaseMissingTables: string[];
   gasDriveConfigured: boolean;
   gasFolderId: string | null;
   storageMode: 'supabase' | 'local_persistent';

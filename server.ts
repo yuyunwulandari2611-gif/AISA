@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import express from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -14,9 +15,11 @@ import {
   deleteQuestionsByAssessmentId,
   deleteStaffById,
   deleteStudentById,
+  getDetailedIntegrationStatus,
   getIntegrationStatus,
   getSiteSettings,
   getSubmissionById,
+  hasAnyAdminAccount,
   invalidateDbCache,
   loadDb,
   markSubmissionsBackedUpBatch,
@@ -28,6 +31,7 @@ import {
   upsertQuestion,
   upsertQuestionsBatch,
   upsertStaff,
+  verifyPassword,
 } from './src/server/db.ts';
 import {
   computeDomainBreakdown,
@@ -57,10 +61,81 @@ import type {
   SiteSettings,
   StudentAnswerPayload,
   SubmissionRecord,
+  UserRole,
 } from './src/types/cbt.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 const UPLOADS_DIR = path.resolve(process.cwd(), 'public', 'uploads');
+
+// Signed Bearer token helper (HMAC-SHA256, secret from env or ephemeral CSPRNG in RAM)
+const SESSION_SIGNING_KEY =
+  (process.env.SESSION_SECRET || '').trim() || crypto.randomBytes(32).toString('hex');
+const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface AuthedRequest extends Request {
+  authUser?: SessionUser;
+}
+
+function signSessionToken(user: SessionUser): string {
+  const payload = {
+    user,
+    exp: Date.now() + TOKEN_TTL_MS,
+  };
+  const encoded = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', SESSION_SIGNING_KEY)
+    .update(encoded)
+    .digest('base64url');
+  return `${encoded}.${sig}`;
+}
+
+function verifySessionToken(token: string): SessionUser | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [encoded, sig] = parts;
+    const expectedSig = crypto
+      .createHmac('sha256', SESSION_SIGNING_KEY)
+      .update(encoded)
+      .digest('base64url');
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expectedSig);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf-8')) as {
+      user?: SessionUser;
+      exp?: number;
+    };
+    if (!parsed.user || !parsed.exp || parsed.exp < Date.now()) return null;
+    return parsed.user;
+  } catch {
+    return null;
+  }
+}
+
+function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+  const authHeader = String(req.headers.authorization || '');
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  if (!token) {
+    return res.status(401).json({ error: 'Sesi login diperlukan. Silakan masuk kembali.' });
+  }
+  const user = verifySessionToken(token);
+  if (!user) {
+    return res.status(401).json({ error: 'Sesi login tidak valid atau telah berakhir.' });
+  }
+  req.authUser = user;
+  next();
+}
+
+function requireRoles(...roles: UserRole[]) {
+  return (req: AuthedRequest, res: Response, next: NextFunction) => {
+    requireAuth(req, res, () => {
+      if (!req.authUser || !roles.includes(req.authUser.role)) {
+        return res.status(403).json({ error: 'Akses ditolak untuk peran akun Anda.' });
+      }
+      next();
+    });
+  };
+}
 
 function ensureUploadsDir() {
   if (!fs.existsSync(UPLOADS_DIR)) {
@@ -69,7 +144,29 @@ function ensureUploadsDir() {
 }
 
 function sanitizeFilename(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const base = path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
+  return base || `file_${Date.now()}`;
+}
+
+async function safeParseJson<T>(response: globalThis.Response): Promise<T | null> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
+function isSafeHttpOrRelativeUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) return true;
+  if (trimmed.startsWith('/')) return true;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
 }
 
 async function uploadMediaToDriveAndLocal(params: {
@@ -85,7 +182,11 @@ async function uploadMediaToDriveAndLocal(params: {
   const buffer = Buffer.from(cleanBase64, 'base64');
   const safeName = `${Date.now()}_${sanitizeFilename(params.fileName)}`;
   ensureUploadsDir();
-  fs.writeFileSync(path.join(UPLOADS_DIR, safeName), buffer);
+  const destPath = path.resolve(UPLOADS_DIR, safeName);
+  if (!destPath.startsWith(UPLOADS_DIR + path.sep)) {
+    throw new Error('Nama berkas tidak valid.');
+  }
+  fs.writeFileSync(destPath, buffer);
   const localUrl = `/uploads/${safeName}`;
 
   const mediaKind: DriveAsset['mediaKind'] = params.mimeType.startsWith('image/')
@@ -106,8 +207,8 @@ async function uploadMediaToDriveAndLocal(params: {
     createdAt: new Date().toISOString(),
   };
 
-  const gasUrl = process.env.GAS_DRIVE_WEBAPP_URL;
-  const gasSecret = process.env.GAS_API_SECRET || '';
+  const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
+  const gasSecret = (process.env.GAS_API_SECRET || '').trim();
   const gasConfigured = Boolean(gasUrl);
   let gasSynced = false;
 
@@ -126,12 +227,11 @@ async function uploadMediaToDriveAndLocal(params: {
         }),
       });
       if (gasRes.ok) {
-        const json = (await gasRes.json()) as { ok?: boolean; file?: DriveAsset };
-        if (json.ok && json.file) {
+        const json = await safeParseJson<{ ok?: boolean; file?: DriveAsset }>(gasRes);
+        if (json?.ok && json.file) {
           asset = {
             ...json.file,
             driveUrl: json.file.url,
-            // Keep localUrl playable instantly in sandbox while preserving driveFileId & driveUrl
             url: localUrl,
           };
           gasSynced = true;
@@ -147,8 +247,6 @@ async function uploadMediaToDriveAndLocal(params: {
   return { asset, gasSynced, gasConfigured };
 }
 
-// Automatically offload any inline `data:image/...;base64,...` to /uploads & GAS Drive
-// so large binary strings are never stored inside Supabase Postgres text/JSONB columns.
 async function normalizeMediaUrl(
   rawUrl: string | undefined,
   uploadedBy: string,
@@ -157,7 +255,9 @@ async function normalizeMediaUrl(
   if (!rawUrl) return rawUrl;
   const trimmed = rawUrl.trim();
   const match = trimmed.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s);
-  if (!match) return trimmed;
+  if (!match) {
+    return isSafeHttpOrRelativeUrl(trimmed) ? trimmed : undefined;
+  }
   const mimeType = match[1];
   const ext = mimeType.includes('png')
     ? 'png'
@@ -223,7 +323,6 @@ async function startServer() {
     next();
   });
 
-  // Serve generated media and uploaded attachments with browser cache headers
   app.use(
     '/media',
     express.static(path.resolve(process.cwd(), 'public', 'media'), {
@@ -250,23 +349,73 @@ async function startServer() {
     res.json({ ok: true, service: 'cbt-mi-maarif-al-ihsan-soborejo' });
   });
 
-  app.post('/api/cache/refresh', async (req, res) => {
-    const actorRole = String(req.headers['x-user-role'] || '');
-    if (actorRole !== 'admin' && actorRole !== 'guru') {
-      return res.status(403).json({ error: 'Akses ditolak.' });
-    }
+  app.post('/api/cache/refresh', requireRoles('admin', 'guru'), async (_req, res) => {
     invalidateDbCache();
     invalidateGasListCache();
     await loadDb({ forceFresh: true });
     res.json({ ok: true });
   });
 
-  app.get('/api/integrations/status', (_req, res) => {
-    res.json({
-      status: getIntegrationStatus(),
-      supabaseSql: SUPABASE_SQL_SCHEMA,
-      gasCode: GOOGLE_APPS_SCRIPT_CODE,
-    });
+  app.get('/api/integrations/status', requireRoles('admin'), async (_req, res) => {
+    try {
+      const status = await getDetailedIntegrationStatus();
+      res.json({
+        status,
+        supabaseSql: SUPABASE_SQL_SCHEMA,
+        gasCode: GOOGLE_APPS_SCRIPT_CODE,
+      });
+    } catch {
+      res.json({
+        status: getIntegrationStatus(),
+        supabaseSql: SUPABASE_SQL_SCHEMA,
+        gasCode: GOOGLE_APPS_SCRIPT_CODE,
+      });
+    }
+  });
+
+  app.post('/api/integrations/test', requireRoles('admin'), async (_req, res) => {
+    try {
+      const status = await getDetailedIntegrationStatus();
+      const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
+      const gasSecret = (process.env.GAS_API_SECRET || '').trim();
+      let gasReachable = false;
+      let gasFolderId: string | null = status.gasFolderId;
+      let gasError: string | null = null;
+
+      if (gasUrl) {
+        try {
+          const url = new URL(gasUrl);
+          url.searchParams.set('action', 'list');
+          if (gasSecret) url.searchParams.set('secret', gasSecret);
+          const response = await fetch(url.toString());
+          if (response.ok) {
+            const json = await safeParseJson<{
+              ok?: boolean;
+              folderId?: string;
+              error?: string;
+            }>(response);
+            if (json?.ok) {
+              gasReachable = true;
+              if (json.folderId) gasFolderId = json.folderId;
+            } else {
+              gasError = json?.error || 'Respons GAS tidak valid.';
+            }
+          } else {
+            gasError = `HTTP ${response.status}`;
+          }
+        } catch (err) {
+          gasError = err instanceof Error ? err.message : 'Gagal menghubungi GAS WebApp.';
+        }
+      }
+
+      res.json({
+        status: { ...status, gasFolderId },
+        gasReachable,
+        gasError,
+      });
+    } catch {
+      res.status(500).json({ error: 'Gagal menguji koneksi integrasi.' });
+    }
   });
 
   // Site & Landing Page Settings (Public read for LoginPage, Admin-only write)
@@ -280,40 +429,49 @@ async function startServer() {
     }
   });
 
-  app.put('/api/settings', async (req, res) => {
+  app.put('/api/settings', requireRoles('admin'), async (req: AuthedRequest, res) => {
     try {
-      const actorRole = String(req.headers['x-user-role'] || '');
-      if (actorRole !== 'admin') {
-        return res.status(403).json({
-          error: 'Akses ditolak: pengaturan tampilan halaman awal hanya diperbolehkan untuk Administrator.',
-        });
-      }
       const body = req.body as Partial<SiteSettings> & { reset?: boolean };
       if (body.reset) {
         const saved = await saveSiteSettings({ ...DEFAULT_SITE_SETTINGS });
         return res.json({ settings: saved });
       }
       const current = await getSiteSettings();
+      const actorName = req.authUser?.name || 'Administrator';
       const safeLogoUrl =
         body.logoUrl !== undefined
-          ? (await normalizeMediaUrl(String(body.logoUrl), 'Administrator', 'logo')) ?? ''
+          ? (await normalizeMediaUrl(String(body.logoUrl), actorName, 'logo')) ?? ''
           : current.logoUrl;
       const safeBgUrl =
         body.backgroundImageUrl !== undefined
-          ? (await normalizeMediaUrl(String(body.backgroundImageUrl), 'Administrator', 'bg')) ?? ''
+          ? (await normalizeMediaUrl(String(body.backgroundImageUrl), actorName, 'bg')) ?? ''
           : current.backgroundImageUrl;
       const saved = await saveSiteSettings({
         ...current,
-        appName: body.appName !== undefined ? String(body.appName).trim() || DEFAULT_SITE_SETTINGS.appName : current.appName,
-        schoolName: body.schoolName !== undefined ? String(body.schoolName).trim() || DEFAULT_SITE_SETTINGS.schoolName : current.schoolName,
+        appName:
+          body.appName !== undefined
+            ? String(body.appName).trim() || DEFAULT_SITE_SETTINGS.appName
+            : current.appName,
+        schoolName:
+          body.schoolName !== undefined
+            ? String(body.schoolName).trim() || DEFAULT_SITE_SETTINGS.schoolName
+            : current.schoolName,
         tagline: body.tagline !== undefined ? String(body.tagline).trim() : current.tagline,
-        eyebrowText: body.eyebrowText !== undefined ? String(body.eyebrowText).trim() : current.eyebrowText,
-        heroTitle: body.heroTitle !== undefined ? String(body.heroTitle).trim() || DEFAULT_SITE_SETTINGS.heroTitle : current.heroTitle,
-        heroSubtitle: body.heroSubtitle !== undefined ? String(body.heroSubtitle).trim() : current.heroSubtitle,
-        loginHeading: body.loginHeading !== undefined ? String(body.loginHeading).trim() || DEFAULT_SITE_SETTINGS.loginHeading : current.loginHeading,
+        eyebrowText:
+          body.eyebrowText !== undefined ? String(body.eyebrowText).trim() : current.eyebrowText,
+        heroTitle:
+          body.heroTitle !== undefined
+            ? String(body.heroTitle).trim() || DEFAULT_SITE_SETTINGS.heroTitle
+            : current.heroTitle,
+        heroSubtitle:
+          body.heroSubtitle !== undefined ? String(body.heroSubtitle).trim() : current.heroSubtitle,
+        loginHeading:
+          body.loginHeading !== undefined
+            ? String(body.loginHeading).trim() || DEFAULT_SITE_SETTINGS.loginHeading
+            : current.loginHeading,
         logoUrl: safeLogoUrl,
         backgroundImageUrl: safeBgUrl,
-        showQuickDemo: body.showQuickDemo !== undefined ? Boolean(body.showQuickDemo) : current.showQuickDemo,
+        showQuickDemo: false,
         updatedAt: new Date().toISOString(),
       });
       res.json({ settings: saved });
@@ -323,7 +481,69 @@ async function startServer() {
     }
   });
 
-  // Authentication for 3 roles: student (peserta ujian), guru, admin (supports unified auto-detect)
+  // First-run Administrator Bootstrap (self-locking once an admin exists or ADMIN_PASSCODE is configured)
+  app.get('/api/auth/bootstrap-status', async (_req, res) => {
+    try {
+      const hasAdmin = await hasAnyAdminAccount();
+      res.json({ needsAdminSetup: !hasAdmin });
+    } catch {
+      res.json({ needsAdminSetup: false });
+    }
+  });
+
+  app.post('/api/auth/bootstrap-admin', async (req, res) => {
+    try {
+      const hasAdmin = await hasAnyAdminAccount();
+      if (hasAdmin) {
+        return res.status(409).json({
+          error: 'Akun Administrator sudah diaktifkan. Silakan masuk melalui formulir login.',
+        });
+      }
+
+      const { username, name, title, password } = req.body as {
+        username?: string;
+        name?: string;
+        title?: string;
+        password?: string;
+      };
+      const cleanUsername = String(username || '').trim();
+      const cleanName = String(name || '').trim();
+      const cleanPassword = String(password || '').trim();
+      const cleanTitle = String(title || 'Administrator Utama & Kepala Proktor').trim();
+
+      if (!cleanUsername || !cleanName || cleanPassword.length < 6) {
+        return res.status(400).json({
+          error: 'Username, nama lengkap, dan kata sandi minimal 6 karakter wajib diisi.',
+        });
+      }
+
+      const created = await upsertStaff({
+        id: `adm-${Date.now()}`,
+        username: cleanUsername,
+        name: cleanName,
+        title: cleanTitle,
+        role: 'admin',
+        subjectArea: 'Manajemen Madrasah',
+        password: cleanPassword,
+      });
+
+      const session: SessionUser = {
+        id: created.id,
+        role: 'admin',
+        identifier: created.username,
+        name: created.name,
+        title: created.title,
+        subjectArea: created.subjectArea,
+      };
+      const token = signSessionToken(session);
+      return res.json({ user: session, token });
+    } catch (err) {
+      console.error('Bootstrap admin error:', err);
+      return res.status(500).json({ error: 'Gagal mengaktifkan akun Administrator pertama.' });
+    }
+  });
+
+  // Authentication for 3 roles: student, guru, admin (auto-detect + env passcode override)
   app.post('/api/auth/login', async (req, res) => {
     try {
       const { role, identifier, secret } = req.body as {
@@ -334,8 +554,31 @@ async function startServer() {
       const cleanId = (identifier || '').trim();
       const cleanSecret = (secret || '').trim();
 
+      if (!cleanId || !cleanSecret) {
+        return res.status(400).json({ error: 'Identitas dan kata sandi/PIN wajib diisi.' });
+      }
+
+      const envAdminPasscode = (process.env.ADMIN_PASSCODE || '').trim();
+      const envAdminUsername = (process.env.ADMIN_USERNAME || 'admin').trim();
+
+      if (
+        envAdminPasscode &&
+        (!role || role === 'auto' || role === 'admin') &&
+        cleanId.toLowerCase() === envAdminUsername.toLowerCase() &&
+        verifyPassword(cleanSecret, envAdminPasscode)
+      ) {
+        const session: SessionUser = {
+          id: 'adm-env',
+          role: 'admin',
+          identifier: envAdminUsername,
+          name: 'Administrator Madrasah',
+          title: 'Administrator Utama',
+          subjectArea: 'Manajemen Madrasah',
+        };
+        return res.json({ user: session, token: signSessionToken(session) });
+      }
+
       if (role === 'student') {
-        // Targeted 1-row lookup on cold start instead of loading all 6 tables
         const student = await authenticateStudent(cleanId, cleanSecret);
         if (!student) {
           return res.status(401).json({
@@ -349,7 +592,7 @@ async function startServer() {
           name: student.name,
           className: student.className,
         };
-        return res.json({ user: session });
+        return res.json({ user: session, token: signSessionToken(session) });
       }
 
       const db = await loadDb();
@@ -364,13 +607,13 @@ async function startServer() {
             name: student.name,
             className: student.className,
           };
-          return res.json({ user: session });
+          return res.json({ user: session, token: signSessionToken(session) });
         }
 
         const staff = db.admins.find(
           (a) =>
             a.username.toLowerCase() === cleanId.toLowerCase() &&
-            a.password === cleanSecret
+            verifyPassword(cleanSecret, a.password)
         );
         if (staff) {
           const session: SessionUser = {
@@ -381,7 +624,7 @@ async function startServer() {
             title: staff.title,
             subjectArea: staff.subjectArea,
           };
-          return res.json({ user: session });
+          return res.json({ user: session, token: signSessionToken(session) });
         }
 
         return res.status(401).json({
@@ -393,7 +636,7 @@ async function startServer() {
         const staff = db.admins.find(
           (a) =>
             a.username.toLowerCase() === cleanId.toLowerCase() &&
-            a.password === cleanSecret &&
+            verifyPassword(cleanSecret, a.password) &&
             a.role === role
         );
         if (!staff) {
@@ -412,7 +655,7 @@ async function startServer() {
           title: staff.title,
           subjectArea: staff.subjectArea,
         };
-        return res.json({ user: session });
+        return res.json({ user: session, token: signSessionToken(session) });
       }
 
       return res.status(400).json({ error: 'Peran login tidak dikenali.' });
@@ -422,18 +665,16 @@ async function startServer() {
     }
   });
 
-  // Assessments listing
-  app.get('/api/assessments', async (req, res) => {
+  // Assessments listing (scoped strictly by verified session user)
+  app.get('/api/assessments', requireAuth, async (req: AuthedRequest, res) => {
     try {
-      const role = String(req.query.role || 'student');
-      const studentNisn = String(req.query.studentNisn || '');
-      const teacherId = String(req.query.teacherId || req.headers['x-user-id'] || '').trim();
+      const authUser = req.authUser!;
       const db = await loadDb();
 
       let assessments = db.assessments;
-      if (role === 'student') {
-        const studentRecord = db.students.find((s) => s.nisn === studentNisn);
-        const studentClass = studentRecord?.className || String(req.query.className || '');
+      if (authUser.role === 'student') {
+        const studentRecord = db.students.find((s) => s.nisn === authUser.identifier);
+        const studentClass = studentRecord?.className || authUser.className || '';
         const gradeMatch = studentClass.match(/Kelas\s*(\d+)/i);
         const studentGradeToken = gradeMatch ? `Kelas ${gradeMatch[1]}` : '';
         assessments = db.assessments.filter((a) => {
@@ -441,21 +682,20 @@ async function startServer() {
           if (!studentGradeToken || a.gradeLevel === 'Semua Kelas') return true;
           return a.gradeLevel.toLowerCase().includes(studentGradeToken.toLowerCase());
         });
-      } else if (role === 'guru') {
-        assessments = teacherId
-          ? db.assessments.filter((a) => a.assignedTeacherId === teacherId)
-          : [];
+      } else if (authUser.role === 'guru') {
+        assessments = db.assessments.filter((a) => a.assignedTeacherId === authUser.id);
       }
 
       const enriched = assessments.map((a) => {
         const qList = db.questions.filter((q) => q.assessmentId === a.id);
         const subs = db.submissions.filter((s) => s.assessmentId === a.id);
-        const mySubmission = studentNisn
-          ? subs.find((s) => s.studentNisn === studentNisn)
-          : undefined;
+        const mySubmission =
+          authUser.role === 'student'
+            ? subs.find((s) => s.studentNisn === authUser.identifier)
+            : undefined;
         const { token, ...safeAssessment } = a;
         return {
-          ...(role === 'student' ? safeAssessment : a),
+          ...(authUser.role === 'student' ? safeAssessment : a),
           questionCount: qList.length,
           submissionCount: subs.length,
           mySubmission: mySubmission || null,
@@ -469,14 +709,8 @@ async function startServer() {
     }
   });
 
-  app.post('/api/assessments', async (req, res) => {
+  app.post('/api/assessments', requireRoles('admin'), async (req, res) => {
     try {
-      const actorRole = String(req.headers['x-user-role'] || '');
-      if (actorRole !== 'admin') {
-        return res.status(403).json({
-          error: 'Akses ditolak: pengaturan jadwal & penugasan mapel hanya diperbolehkan untuk Administrator.',
-        });
-      }
       const payload = req.body as Assessment;
       if (!payload.title || !payload.token || !payload.assignedTeacherId) {
         return res.status(400).json({
@@ -501,15 +735,9 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/assessments/:id', async (req, res) => {
+  app.delete('/api/assessments/:id', requireRoles('admin'), async (req, res) => {
     try {
-      const actorRole = String(req.headers['x-user-role'] || '');
-      if (actorRole !== 'admin') {
-        return res.status(403).json({
-          error: 'Akses ditolak: penghapusan jadwal asesmen hanya diperbolehkan untuk Administrator.',
-        });
-      }
-      await deleteAssessmentById(req.params.id);
+      await deleteAssessmentById(String(req.params.id));
       res.json({ ok: true });
     } catch (err) {
       console.error('Delete assessment error:', err);
@@ -518,78 +746,83 @@ async function startServer() {
   });
 
   // Verify exam token & serve safe questions (no answer keys!)
-  app.post('/api/assessments/:id/verify-token', async (req, res) => {
-    try {
-      const { token, studentNisn } = req.body as {
-        token: string;
-        studentNisn: string;
-      };
-      const db = await loadDb();
-      const assessment = db.assessments.find((a) => a.id === req.params.id);
-      if (!assessment) {
-        return res.status(404).json({ error: 'Asesmen tidak ditemukan.' });
-      }
-      if (assessment.status !== 'active') {
-        return res.status(403).json({ error: 'Asesmen ini belum diaktifkan oleh proktor.' });
-      }
-      if (assessment.token.toUpperCase() !== (token || '').trim().toUpperCase()) {
-        return res.status(401).json({ error: 'Token sesi ujian salah. Silakan cek papan pengumuman proktor.' });
-      }
+  app.post(
+    '/api/assessments/:id/verify-token',
+    requireRoles('student'),
+    async (req: AuthedRequest, res) => {
+      try {
+        const { token } = req.body as { token: string };
+        const studentNisn = req.authUser!.identifier;
+        const db = await loadDb();
+        const assessment = db.assessments.find((a) => a.id === req.params.id);
+        if (!assessment) {
+          return res.status(404).json({ error: 'Asesmen tidak ditemukan.' });
+        }
+        if (assessment.status !== 'active') {
+          return res.status(403).json({ error: 'Asesmen ini belum diaktifkan oleh proktor.' });
+        }
+        if (assessment.token.toUpperCase() !== (token || '').trim().toUpperCase()) {
+          return res
+            .status(401)
+            .json({ error: 'Token sesi ujian salah. Silakan cek papan pengumuman proktor.' });
+        }
 
-      const existingSub = db.submissions.find(
-        (s) => s.assessmentId === assessment.id && s.studentNisn === studentNisn
-      );
-      if (existingSub && existingSub.isLocked) {
-        return res.status(423).json({
-          error:
-            'Sesi ujian Anda dikunci karena pelanggaran keamanan anti-kecurangan. Hubungi Guru atau Proktor untuk membuka kunci.',
+        const existingSub = db.submissions.find(
+          (s) => s.assessmentId === assessment.id && s.studentNisn === studentNisn
+        );
+        if (existingSub && existingSub.isLocked) {
+          return res.status(423).json({
+            error:
+              'Sesi ujian Anda dikunci karena pelanggaran keamanan anti-kecurangan. Hubungi Guru atau Proktor untuk membuka kunci.',
+          });
+        }
+        if (existingSub) {
+          return res.status(409).json({
+            error: 'Anda sudah menyelesaikan asesmen ini.',
+            submission: existingSub,
+          });
+        }
+
+        let qList = db.questions
+          .filter((q) => q.assessmentId === assessment.id)
+          .sort((a, b) => a.orderNumber - b.orderNumber);
+
+        if (assessment.shuffleQuestions) {
+          qList = shuffleArray(qList);
+        }
+
+        const safeQuestions: SafeQuestion[] = qList.map((q) => ({
+          id: q.id,
+          assessmentId: q.assessmentId,
+          orderNumber: q.orderNumber,
+          type: q.type,
+          domain: q.domain,
+          cognitiveLevel: q.cognitiveLevel,
+          stimulusTitle: q.stimulusTitle,
+          stimulusPassage: q.stimulusPassage,
+          imageUrl: q.imageUrl,
+          imageCaption: q.imageCaption,
+          videoUrl: q.videoUrl,
+          videoCaption: q.videoCaption,
+          prompt: q.prompt,
+          options:
+            assessment.shuffleQuestions && q.type === 'pg' ? shuffleArray(q.options) : q.options,
+          maxPoints: q.maxPoints,
+        }));
+
+        res.json({
+          assessment,
+          questions: safeQuestions,
+          startedAt: new Date().toISOString(),
         });
+      } catch (err) {
+        console.error('Verify token error:', err);
+        res.status(500).json({ error: 'Gagal memverifikasi token asesmen.' });
       }
-      if (existingSub) {
-        return res.status(409).json({
-          error: 'Anda sudah menyelesaikan asesmen ini.',
-          submission: existingSub,
-        });
-      }
-
-      let qList = db.questions
-        .filter((q) => q.assessmentId === assessment.id)
-        .sort((a, b) => a.orderNumber - b.orderNumber);
-
-      if (assessment.shuffleQuestions) {
-        qList = shuffleArray(qList);
-      }
-
-      const safeQuestions: SafeQuestion[] = qList.map((q) => ({
-        id: q.id,
-        assessmentId: q.assessmentId,
-        orderNumber: q.orderNumber,
-        type: q.type,
-        domain: q.domain,
-        cognitiveLevel: q.cognitiveLevel,
-        stimulusTitle: q.stimulusTitle,
-        stimulusPassage: q.stimulusPassage,
-        imageUrl: q.imageUrl,
-        imageCaption: q.imageCaption,
-        videoUrl: q.videoUrl,
-        videoCaption: q.videoCaption,
-        prompt: q.prompt,
-        options: assessment.shuffleQuestions && q.type === 'pg' ? shuffleArray(q.options) : q.options,
-        maxPoints: q.maxPoints,
-      }));
-
-      res.json({
-        assessment,
-        questions: safeQuestions,
-        startedAt: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.error('Verify token error:', err);
-      res.status(500).json({ error: 'Gagal memverifikasi token asesmen.' });
     }
-  });
+  );
 
-  // Questions CRUD & Import Dokumen: khusus untuk Guru Pengampu sesuai jadwal penugasan
+  // Structural format template downloads (zero dummy student/exam state, pure format guide)
   app.get('/api/questions/import-template', (req, res) => {
     try {
       const format = String(req.query.format || 'xlsx').toLowerCase();
@@ -627,111 +860,101 @@ async function startServer() {
     }
   });
 
-  app.post('/api/questions/parse-document', async (req, res) => {
-    try {
-      const actorRole = String(req.headers['x-user-role'] || '');
-      const actorId = String(req.headers['x-user-id'] || '');
-      if (actorRole !== 'guru') {
-        return res.status(403).json({
-          error: 'Akses ditolak: impor dokumen soal hanya diperbolehkan untuk Guru Pengampu.',
-        });
-      }
+  app.post(
+    '/api/questions/parse-document',
+    requireRoles('guru'),
+    async (req: AuthedRequest, res) => {
+      try {
+        const actorId = req.authUser!.id;
+        const { assessmentId, fileName, base64Data, rawText } = req.body as {
+          assessmentId: string;
+          fileName?: string;
+          base64Data?: string;
+          rawText?: string;
+        };
 
-      const { assessmentId, fileName, base64Data, rawText } = req.body as {
-        assessmentId: string;
-        fileName?: string;
-        base64Data?: string;
-        rawText?: string;
-      };
+        if (!assessmentId) {
+          return res.status(400).json({ error: 'ID asesmen tujuan wajib dipilih.' });
+        }
 
-      if (!assessmentId) {
-        return res.status(400).json({ error: 'ID asesmen tujuan wajib dipilih.' });
-      }
-
-      const db = await loadDb();
-      const targetAsm = db.assessments.find((a) => a.id === assessmentId);
-      if (!targetAsm) {
-        return res.status(404).json({ error: 'Jadwal asesmen tidak ditemukan.' });
-      }
-      if (targetAsm.assignedTeacherId && targetAsm.assignedTeacherId !== actorId) {
-        return res.status(403).json({
-          error: `Akses ditolak: jadwal mapel ini ditugaskan kepada ${targetAsm.assignedTeacherName || 'guru lain'}.`,
-        });
-      }
-
-      const existingCount = db.questions.filter((q) => q.assessmentId === assessmentId).length;
-      const teacher = db.admins.find((a) => a.id === actorId);
-      const uploadedAssets: DriveAsset[] = [];
-
-      if (rawText && rawText.trim().length > 0) {
-        const drafts = parseStructuredText(rawText, existingCount + 1);
-        return res.json({
-          result: {
-            format: 'TEKS',
-            questions: drafts,
-            embeddedImagesCount: 0,
-            summary: {
-              total: drafts.length,
-              pg: drafts.filter((d) => d.type === 'pg').length,
-              pgk: drafts.filter((d) => d.type === 'pgk').length,
-              essay: drafts.filter((d) => d.type === 'essay').length,
-            },
-          },
-          uploadedAssets,
-        });
-      }
-
-      if (!fileName || !base64Data) {
-        return res.status(400).json({ error: 'Berkas dokumen atau teks soal wajib disediakan.' });
-      }
-
-      const cleanBase64 = base64Data.includes(',') ? base64Data.split(',')[1] : base64Data;
-      const buffer = Buffer.from(cleanBase64, 'base64');
-
-      const result = await parseQuestionsDocument({
-        fileName,
-        buffer,
-        startingOrderNumber: existingCount + 1,
-        onSaveEmbeddedImage: async (imgBase64, mimeType) => {
-          const ext = mimeType.includes('png')
-            ? 'png'
-            : mimeType.includes('webp')
-              ? 'webp'
-              : mimeType.includes('gif')
-                ? 'gif'
-                : 'jpg';
-          const imgName = `docx_img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
-          const { asset } = await uploadMediaToDriveAndLocal({
-            fileName: imgName,
-            mimeType,
-            base64Data: imgBase64,
-            uploadedBy: teacher?.name || 'Guru Pengampu',
-            idPrefix: 'drv-imp',
+        const db = await loadDb();
+        const targetAsm = db.assessments.find((a) => a.id === assessmentId);
+        if (!targetAsm) {
+          return res.status(404).json({ error: 'Jadwal asesmen tidak ditemukan.' });
+        }
+        if (targetAsm.assignedTeacherId && targetAsm.assignedTeacherId !== actorId) {
+          return res.status(403).json({
+            error: `Akses ditolak: jadwal mapel ini ditugaskan kepada ${targetAsm.assignedTeacherName || 'guru lain'}.`,
           });
-          uploadedAssets.push(asset);
-          return asset.url;
-        },
-      });
+        }
 
-      return res.json({ result, uploadedAssets });
-    } catch (err) {
-      console.error('Parse document error:', err);
-      return res.status(500).json({
-        error: 'Gagal membaca dokumen soal. Pastikan format file (.docx, .xlsx, .csv, .txt, .json) tidak rusak.',
-      });
-    }
-  });
+        const existingCount = db.questions.filter((q) => q.assessmentId === assessmentId).length;
+        const uploadedAssets: DriveAsset[] = [];
 
-  app.post('/api/questions/bulk', async (req, res) => {
-    try {
-      const actorRole = String(req.headers['x-user-role'] || '');
-      const actorId = String(req.headers['x-user-id'] || '');
-      if (actorRole !== 'guru') {
-        return res.status(403).json({
-          error: 'Akses ditolak: impor butir soal hanya diperbolehkan untuk Guru Pengampu.',
+        if (rawText && rawText.trim().length > 0) {
+          const drafts = parseStructuredText(rawText, existingCount + 1);
+          return res.json({
+            result: {
+              format: 'TEKS',
+              questions: drafts,
+              embeddedImagesCount: 0,
+              summary: {
+                total: drafts.length,
+                pg: drafts.filter((d) => d.type === 'pg').length,
+                pgk: drafts.filter((d) => d.type === 'pgk').length,
+                essay: drafts.filter((d) => d.type === 'essay').length,
+              },
+            },
+            uploadedAssets,
+          });
+        }
+
+        if (!fileName || !base64Data) {
+          return res.status(400).json({ error: 'Berkas dokumen atau teks soal wajib disediakan.' });
+        }
+
+        const cleanBase64 = base64Data.includes(',') ? base64Data.split(',')[1] : base64Data;
+        const buffer = Buffer.from(cleanBase64, 'base64');
+
+        const result = await parseQuestionsDocument({
+          fileName,
+          buffer,
+          startingOrderNumber: existingCount + 1,
+          onSaveEmbeddedImage: async (imgBase64, mimeType) => {
+            const ext = mimeType.includes('png')
+              ? 'png'
+              : mimeType.includes('webp')
+                ? 'webp'
+                : mimeType.includes('gif')
+                  ? 'gif'
+                  : 'jpg';
+            const imgName = `docx_img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+            const { asset } = await uploadMediaToDriveAndLocal({
+              fileName: imgName,
+              mimeType,
+              base64Data: imgBase64,
+              uploadedBy: req.authUser!.name,
+              idPrefix: 'drv-imp',
+            });
+            uploadedAssets.push(asset);
+            return asset.url;
+          },
+        });
+
+        return res.json({ result, uploadedAssets });
+      } catch (err) {
+        console.error('Parse document error:', err);
+        return res.status(500).json({
+          error:
+            'Gagal membaca dokumen soal. Pastikan format file (.docx, .xlsx, .csv, .txt, .json) tidak rusak.',
         });
       }
+    }
+  );
 
+  app.post('/api/questions/bulk', requireRoles('guru'), async (req: AuthedRequest, res) => {
+    try {
+      const actorId = req.authUser!.id;
       const { assessmentId, drafts, mode } = req.body as {
         assessmentId: string;
         drafts: ParsedQuestionDraft[];
@@ -757,8 +980,7 @@ async function startServer() {
         await deleteQuestionsByAssessmentId(assessmentId);
       }
 
-      const teacher = db.admins.find((a) => a.id === actorId);
-      const authorName = teacher?.name || targetAsm.assignedTeacherName || 'Guru Pengampu';
+      const authorName = req.authUser!.name || targetAsm.assignedTeacherName || 'Guru Pengampu';
       const preparedQuestions: Question[] = [];
 
       for (let i = 0; i < drafts.length; i++) {
@@ -766,7 +988,7 @@ async function startServer() {
           drafts[i],
           {
             assessmentId,
-            authorId: actorId || teacher?.id || 'guru-1',
+            authorId: actorId,
             authorName,
           },
           i
@@ -791,42 +1013,41 @@ async function startServer() {
     }
   });
 
-  app.get('/api/questions/:assessmentId', async (req, res) => {
-    try {
-      const actorRole = String(req.headers['x-user-role'] || '');
-      const actorId = String(req.headers['x-user-id'] || '').trim();
-      const db = await loadDb();
-      if (actorRole === 'guru') {
-        const targetAsm = db.assessments.find((a) => a.id === req.params.assessmentId);
-        if (!targetAsm || !actorId || targetAsm.assignedTeacherId !== actorId) {
-          return res.status(403).json({
-            error: 'Akses ditolak: Anda hanya dapat melihat soal pada jadwal penugasan Anda sendiri.',
-          });
+  app.get(
+    '/api/questions/:assessmentId',
+    requireRoles('admin', 'guru'),
+    async (req: AuthedRequest, res) => {
+      try {
+        const authUser = req.authUser!;
+        const db = await loadDb();
+        if (authUser.role === 'guru') {
+          const targetAsm = db.assessments.find((a) => a.id === req.params.assessmentId);
+          if (!targetAsm || targetAsm.assignedTeacherId !== authUser.id) {
+            return res.status(403).json({
+              error: 'Akses ditolak: Anda hanya dapat melihat soal pada jadwal penugasan Anda sendiri.',
+            });
+          }
         }
+        const questions = db.questions
+          .filter((q) => q.assessmentId === req.params.assessmentId)
+          .sort((a, b) => a.orderNumber - b.orderNumber);
+        res.json({ questions });
+      } catch {
+        res.status(500).json({ error: 'Gagal memuat bank soal.' });
       }
-      const questions = db.questions
-        .filter((q) => q.assessmentId === req.params.assessmentId)
-        .sort((a, b) => a.orderNumber - b.orderNumber);
-      res.json({ questions });
-    } catch (err) {
-      res.status(500).json({ error: 'Gagal memuat bank soal.' });
     }
-  });
+  );
 
-  app.post('/api/questions', async (req, res) => {
+  app.post('/api/questions', requireRoles('guru'), async (req: AuthedRequest, res) => {
     try {
-      const actorRole = String(req.headers['x-user-role'] || '');
-      const actorId = String(req.headers['x-user-id'] || '');
-      if (actorRole !== 'guru') {
-        return res.status(403).json({
-          error: 'Akses ditolak: pembuatan dan penyuntingan butir soal hanya diperbolehkan untuk Guru Pengampu.',
-        });
-      }
+      const actorId = req.authUser!.id;
       const payload = req.body as Question;
       const cleanPrompt = (payload.prompt || '').trim();
       const hasImage = Boolean(payload.imageUrl && payload.imageUrl.trim());
       if (!payload.assessmentId || (!cleanPrompt && !hasImage)) {
-        return res.status(400).json({ error: 'Asesmen dan pertanyaan atau gambar soal wajib diisi.' });
+        return res
+          .status(400)
+          .json({ error: 'Asesmen dan pertanyaan atau gambar soal wajib diisi.' });
       }
       const db = await loadDb();
       const targetAsm = db.assessments.find((a) => a.id === payload.assessmentId);
@@ -838,7 +1059,7 @@ async function startServer() {
           error: `Akses ditolak: jadwal mapel ini ditugaskan kepada ${targetAsm.assignedTeacherName || 'guru lain'}. Anda hanya dapat membuat soal sesuai jadwal penugasan Anda.`,
         });
       }
-      const teacherName = payload.authorName || targetAsm.assignedTeacherName || 'Guru Pengampu';
+      const teacherName = req.authUser!.name || targetAsm.assignedTeacherName || 'Guru Pengampu';
       const safeQuestionImage = await normalizeMediaUrl(payload.imageUrl, teacherName, 'q_img');
       const safeOptions = await Promise.all(
         (payload.options || []).map(async (opt) => ({
@@ -854,24 +1075,20 @@ async function startServer() {
         options: safeOptions,
         prompt: cleanPrompt || 'Perhatikan gambar soal berikut dengan saksama.',
         id: payload.id || `q-${Date.now()}`,
+        authorId: actorId,
+        authorName: teacherName,
         maxPoints: Number(payload.maxPoints || 10),
         orderNumber: Number(payload.orderNumber || 1),
       });
       res.json({ question: saved });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal menyimpan butir soal.' });
     }
   });
 
-  app.delete('/api/questions/:id', async (req, res) => {
+  app.delete('/api/questions/:id', requireRoles('guru'), async (req: AuthedRequest, res) => {
     try {
-      const actorRole = String(req.headers['x-user-role'] || '');
-      const actorId = String(req.headers['x-user-id'] || '');
-      if (actorRole !== 'guru') {
-        return res.status(403).json({
-          error: 'Akses ditolak: penghapusan butir soal hanya diperbolehkan untuk Guru Pengampu.',
-        });
-      }
+      const actorId = req.authUser!.id;
       const db = await loadDb();
       const targetQ = db.questions.find((q) => q.id === req.params.id);
       if (targetQ) {
@@ -882,22 +1099,19 @@ async function startServer() {
           });
         }
       }
-      await deleteQuestionById(req.params.id);
+      await deleteQuestionById(String(req.params.id));
       res.json({ ok: true });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal menghapus soal.' });
     }
   });
 
   // Automated Grading & Instant Gradebook Submission
-  app.post('/api/exam/submit', async (req, res) => {
+  app.post('/api/exam/submit', requireRoles('student'), async (req: AuthedRequest, res) => {
     try {
+      const authUser = req.authUser!;
       const {
         assessmentId,
-        studentId,
-        studentNisn,
-        studentName,
-        className,
         startedAt,
         durationSeconds,
         violationCount,
@@ -905,10 +1119,6 @@ async function startServer() {
         answers,
       } = req.body as {
         assessmentId: string;
-        studentId: string;
-        studentNisn: string;
-        studentName: string;
-        className: string;
         startedAt: string;
         durationSeconds: number;
         violationCount: number;
@@ -942,13 +1152,13 @@ async function startServer() {
 
       const status = getIntegrationStatus();
       const record: SubmissionRecord = {
-        id: `sub-${Date.now()}-${studentNisn}`,
+        id: `sub-${Date.now()}-${authUser.identifier}`,
         assessmentId: assessment.id,
         assessmentTitle: assessment.title,
-        studentId,
-        studentNisn,
-        studentName,
-        className,
+        studentId: authUser.id,
+        studentNisn: authUser.identifier,
+        studentName: authUser.name,
+        className: authUser.className || '-',
         startedAt: startedAt || new Date().toISOString(),
         submittedAt: new Date().toISOString(),
         durationSeconds: Number(durationSeconds || 0),
@@ -974,147 +1184,160 @@ async function startServer() {
   });
 
   // Submissions / Instant Gradebook
-  app.get('/api/submissions', async (req, res) => {
+  app.get('/api/submissions', requireAuth, async (req: AuthedRequest, res) => {
     try {
-      const studentNisn = req.query.studentNisn ? String(req.query.studentNisn) : null;
-      const role = String(req.query.role || req.headers['x-user-role'] || '');
-      const teacherId = String(req.query.teacherId || req.headers['x-user-id'] || '').trim();
+      const authUser = req.authUser!;
       const db = await loadDb();
-      let list = studentNisn
-        ? db.submissions.filter((s) => s.studentNisn === studentNisn)
-        : db.submissions;
-      if (role === 'guru' && !studentNisn) {
+      let list = db.submissions;
+
+      if (authUser.role === 'student') {
+        list = list.filter((s) => s.studentNisn === authUser.identifier);
+      } else if (authUser.role === 'guru') {
         const assignedIds = new Set(
-          teacherId
-            ? db.assessments.filter((a) => a.assignedTeacherId === teacherId).map((a) => a.id)
-            : []
+          db.assessments
+            .filter((a) => a.assignedTeacherId === authUser.id)
+            .map((a) => a.id)
         );
         list = list.filter((s) => assignedIds.has(s.assessmentId));
       }
       res.json({ submissions: list });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal memuat database nilai.' });
     }
   });
 
-  // Single submission detail (lazy-loads `gradedItems` JSONB from Supabase on demand)
-  app.get('/api/submissions/:id', async (req, res) => {
+  app.get('/api/submissions/:id', requireAuth, async (req: AuthedRequest, res) => {
     try {
-      const role = String(req.query.role || req.headers['x-user-role'] || '');
-      const actorId = String(req.query.teacherId || req.headers['x-user-id'] || '').trim();
-      const studentNisn = String(req.query.studentNisn || '').trim();
-
-      const submission = await getSubmissionById(req.params.id);
+      const authUser = req.authUser!;
+      const submission = await getSubmissionById(String(req.params.id));
       if (!submission) {
         return res.status(404).json({ error: 'Data nilai siswa tidak ditemukan.' });
       }
 
-      if (role === 'student' && studentNisn && submission.studentNisn !== studentNisn) {
+      if (authUser.role === 'student' && submission.studentNisn !== authUser.identifier) {
         return res.status(403).json({ error: 'Akses ditolak.' });
       }
-      if (role === 'guru') {
+      if (authUser.role === 'guru') {
         const db = await loadDb();
         const asm = db.assessments.find((a) => a.id === submission.assessmentId);
-        if (!asm || !actorId || asm.assignedTeacherId !== actorId) {
+        if (!asm || asm.assignedTeacherId !== authUser.id) {
           return res.status(403).json({ error: 'Akses ditolak.' });
         }
       }
 
       res.json({ submission });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal memuat rincian nilai.' });
     }
   });
 
-  // Teacher/Admin calibration for essays or unlocking auto-locked sessions
-  app.patch('/api/submissions/:id/calibrate', async (req, res) => {
-    try {
-      const { gradedItems, unlockSession } = req.body as {
-        gradedItems?: SubmissionRecord['gradedItems'];
-        unlockSession?: boolean;
-      };
-      const existing = await getSubmissionById(req.params.id);
-      if (!existing) {
-        return res.status(404).json({ error: 'Data nilai siswa tidak ditemukan.' });
+  app.patch(
+    '/api/submissions/:id/calibrate',
+    requireRoles('admin', 'guru'),
+    async (req: AuthedRequest, res) => {
+      try {
+        const authUser = req.authUser!;
+        const { gradedItems, unlockSession } = req.body as {
+          gradedItems?: SubmissionRecord['gradedItems'];
+          unlockSession?: boolean;
+        };
+        const existing = await getSubmissionById(String(req.params.id));
+        if (!existing) {
+          return res.status(404).json({ error: 'Data nilai siswa tidak ditemukan.' });
+        }
+
+        if (authUser.role === 'guru') {
+          const db = await loadDb();
+          const asm = db.assessments.find((a) => a.id === existing.assessmentId);
+          if (!asm || asm.assignedTeacherId !== authUser.id) {
+            return res.status(403).json({ error: 'Akses ditolak.' });
+          }
+        }
+
+        const nextItems = gradedItems || existing.gradedItems;
+        const totalEarned =
+          Math.round(nextItems.reduce((acc, i) => acc + Number(i.earnedPoints || 0), 0) * 100) /
+          100;
+        const totalMax =
+          nextItems.reduce((acc, i) => acc + Number(i.maxPoints || 0), 0) ||
+          existing.totalPointsMax;
+        const finalScore =
+          totalMax > 0 ? Math.round((totalEarned / totalMax) * 1000) / 10 : existing.finalScore;
+
+        const updated: SubmissionRecord = {
+          ...existing,
+          gradedItems: nextItems,
+          totalPointsEarned: totalEarned,
+          totalPointsMax: totalMax,
+          finalScore,
+          predicate: computePredicate(finalScore),
+          domainBreakdown:
+            nextItems.length > 0 ? computeDomainBreakdown(nextItems) : existing.domainBreakdown,
+          isLocked: unlockSession ? false : existing.isLocked,
+        };
+
+        await saveSubmission(updated);
+        res.json({ submission: updated });
+      } catch {
+        res.status(500).json({ error: 'Gagal memperbarui nilai.' });
       }
-
-      const nextItems = gradedItems || existing.gradedItems;
-      const totalEarned =
-        Math.round(nextItems.reduce((acc, i) => acc + Number(i.earnedPoints || 0), 0) * 100) /
-        100;
-      const totalMax = nextItems.reduce((acc, i) => acc + Number(i.maxPoints || 0), 0) || existing.totalPointsMax;
-      const finalScore =
-        totalMax > 0 ? Math.round((totalEarned / totalMax) * 1000) / 10 : existing.finalScore;
-
-      const updated: SubmissionRecord = {
-        ...existing,
-        gradedItems: nextItems,
-        totalPointsEarned: totalEarned,
-        totalPointsMax: totalMax,
-        finalScore,
-        predicate: computePredicate(finalScore),
-        domainBreakdown:
-          nextItems.length > 0 ? computeDomainBreakdown(nextItems) : existing.domainBreakdown,
-        isLocked: unlockSession ? false : existing.isLocked,
-      };
-
-      await saveSubmission(updated);
-      res.json({ submission: updated });
-    } catch (err) {
-      res.status(500).json({ error: 'Gagal memperbarui nilai.' });
     }
-  });
+  );
 
   // Anti-cheat violation logging
-  app.post('/api/anti-cheat/log', async (req, res) => {
+  app.post('/api/anti-cheat/log', requireRoles('student'), async (req: AuthedRequest, res) => {
     try {
+      const authUser = req.authUser!;
       const payload = req.body as Omit<AntiCheatLog, 'id' | 'timestamp'>;
       const log: AntiCheatLog = {
         ...payload,
+        studentId: authUser.id,
+        studentNisn: authUser.identifier,
+        studentName: authUser.name,
+        className: authUser.className || '-',
         id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         timestamp: new Date().toISOString(),
       };
       await appendAntiCheatLog(log);
       res.json({ log });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal mencatat log keamanan.' });
     }
   });
 
-  app.get('/api/anti-cheat/logs', async (req, res) => {
+  app.get('/api/anti-cheat/logs', requireRoles('admin', 'guru'), async (req: AuthedRequest, res) => {
     try {
-      const role = String(req.query.role || req.headers['x-user-role'] || '');
-      const teacherId = String(req.query.teacherId || req.headers['x-user-id'] || '').trim();
+      const authUser = req.authUser!;
       const db = await loadDb();
       let logs = db.antiCheatLogs;
-      if (role === 'guru') {
+      if (authUser.role === 'guru') {
         const assignedIds = new Set(
-          teacherId
-            ? db.assessments.filter((a) => a.assignedTeacherId === teacherId).map((a) => a.id)
-            : []
+          db.assessments
+            .filter((a) => a.assignedTeacherId === authUser.id)
+            .map((a) => a.id)
         );
         logs = logs.filter((l) => assignedIds.has(l.assessmentId));
       }
       res.json({ logs });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal memuat log pengawas.' });
     }
   });
 
-  // Role & User Account Management (Admin & Guru)
-  app.get('/api/users', async (_req, res) => {
+  // Role & User Account Management (Admin only)
+  app.get('/api/users', requireRoles('admin'), async (_req, res) => {
     try {
       const db = await loadDb();
       res.json({
         students: db.students,
         staff: db.admins.map(({ password: _p, ...rest }) => rest),
       });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal memuat daftar akun.' });
     }
   });
 
-  app.post('/api/users/student', async (req, res) => {
+  app.post('/api/users/student', requireRoles('admin'), async (req, res) => {
     try {
       const { id, nisn, name, className, pin } = req.body;
       if (!nisn || !name || !className || !pin) {
@@ -1128,25 +1351,31 @@ async function startServer() {
         pin: String(pin).trim(),
       });
       res.json({ student: saved });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal menyimpan akun peserta ujian.' });
     }
   });
 
-  app.delete('/api/users/student/:id', async (req, res) => {
+  app.delete('/api/users/student/:id', requireRoles('admin'), async (req, res) => {
     try {
-      await deleteStudentById(req.params.id);
+      await deleteStudentById(String(req.params.id));
       res.json({ ok: true });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal menghapus akun peserta.' });
     }
   });
 
-  app.post('/api/users/staff', async (req, res) => {
+  app.post('/api/users/staff', requireRoles('admin'), async (req, res) => {
     try {
       const { id, username, name, title, role, subjectArea, password } = req.body;
       if (!username || !name || !role) {
         return res.status(400).json({ error: 'Username, nama lengkap, dan peran wajib diisi.' });
+      }
+      const cleanPassword = String(password || '').trim();
+      const db = await loadDb();
+      const existing = id ? db.admins.find((a) => a.id === id) : undefined;
+      if (!existing && !cleanPassword) {
+        return res.status(400).json({ error: 'Kata sandi wajib diisi untuk akun baru.' });
       }
       const saved = await upsertStaff({
         id: id || `${role}-${Date.now()}`,
@@ -1155,30 +1384,33 @@ async function startServer() {
         title: String(title || (role === 'admin' ? 'Administrator CBT' : 'Guru Pengampu')).trim(),
         role: role === 'admin' ? 'admin' : 'guru',
         subjectArea: subjectArea ? String(subjectArea).trim() : undefined,
-        password: String(password || 'guru2026').trim(),
+        password: cleanPassword || existing!.password,
       });
       const { password: _p, ...safeStaff } = saved;
       res.json({ staff: safeStaff });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal menyimpan akun guru/admin.' });
     }
   });
 
-  app.delete('/api/users/staff/:id', async (req, res) => {
+  app.delete('/api/users/staff/:id', requireRoles('admin'), async (req: AuthedRequest, res) => {
     try {
-      await deleteStaffById(req.params.id);
+      if (req.params.id === req.authUser?.id) {
+        return res.status(400).json({ error: 'Anda tidak dapat menghapus akun Anda sendiri.' });
+      }
+      await deleteStaffById(String(req.params.id));
       res.json({ ok: true });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal menghapus akun staf.' });
     }
   });
 
   // Google Drive via Google Apps Script Proxy + Local Madrasah Media Gallery
-  app.get('/api/drive/files', async (req, res) => {
+  app.get('/api/drive/files', requireRoles('admin', 'guru'), async (req, res) => {
     try {
       const db = await loadDb();
-      const gasUrl = process.env.GAS_DRIVE_WEBAPP_URL;
-      const gasSecret = process.env.GAS_API_SECRET || '';
+      const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
+      const gasSecret = (process.env.GAS_API_SECRET || '').trim();
       const forceFresh = req.query.fresh === '1';
 
       let remoteFiles: DriveAsset[] = [];
@@ -1198,8 +1430,8 @@ async function startServer() {
           if (gasSecret) url.searchParams.set('secret', gasSecret);
           const response = await fetch(url.toString());
           if (response.ok) {
-            const json = (await response.json()) as { ok?: boolean; files?: DriveAsset[] };
-            if (json.ok && Array.isArray(json.files)) {
+            const json = await safeParseJson<{ ok?: boolean; files?: DriveAsset[] }>(response);
+            if (json?.ok && Array.isArray(json.files)) {
               remoteFiles = json.files;
               gasReachable = true;
             }
@@ -1212,18 +1444,17 @@ async function startServer() {
 
       const merged = [...remoteFiles, ...db.driveAssets];
       res.json({ files: merged, gasReachable });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal memuat file media Google Drive.' });
     }
   });
 
-  app.post('/api/drive/upload', async (req, res) => {
+  app.post('/api/drive/upload', requireRoles('admin', 'guru'), async (req: AuthedRequest, res) => {
     try {
-      const { fileName, mimeType, base64Data, uploadedBy } = req.body as {
+      const { fileName, mimeType, base64Data } = req.body as {
         fileName: string;
         mimeType: string;
         base64Data: string;
-        uploadedBy: string;
       };
 
       if (!fileName || !mimeType || !base64Data) {
@@ -1234,7 +1465,7 @@ async function startServer() {
         fileName,
         mimeType,
         base64Data,
-        uploadedBy: uploadedBy || 'Guru/Admin',
+        uploadedBy: req.authUser!.name || 'Guru/Admin',
       });
 
       res.json({ asset, gasSynced, gasConfigured });
@@ -1244,10 +1475,10 @@ async function startServer() {
     }
   });
 
-  app.post('/api/drive/sync-all', async (_req, res) => {
+  app.post('/api/drive/sync-all', requireRoles('admin', 'guru'), async (_req, res) => {
     try {
-      const gasUrl = process.env.GAS_DRIVE_WEBAPP_URL;
-      const gasSecret = process.env.GAS_API_SECRET || '';
+      const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
+      const gasSecret = (process.env.GAS_API_SECRET || '').trim();
       if (!gasUrl) {
         return res.status(400).json({
           error: 'GAS_DRIVE_WEBAPP_URL belum disetel di Secrets server.',
@@ -1262,8 +1493,8 @@ async function startServer() {
 
       for (const item of pending) {
         const relPath = item.url.replace(/^\/uploads\//, '');
-        const absPath = path.join(UPLOADS_DIR, relPath);
-        if (!fs.existsSync(absPath)) continue;
+        const absPath = path.resolve(UPLOADS_DIR, relPath);
+        if (!absPath.startsWith(UPLOADS_DIR + path.sep) || !fs.existsSync(absPath)) continue;
         const base64Data = fs.readFileSync(absPath).toString('base64');
         const gasRes = await fetch(gasUrl, {
           method: 'POST',
@@ -1278,8 +1509,8 @@ async function startServer() {
           }),
         });
         if (gasRes.ok) {
-          const json = (await gasRes.json()) as { ok?: boolean; file?: DriveAsset };
-          if (json.ok && json.file) {
+          const json = await safeParseJson<{ ok?: boolean; file?: DriveAsset }>(gasRes);
+          if (json?.ok && json.file) {
             await removeDriveAsset(item.id);
             await saveDriveAsset({
               ...item,
@@ -1292,6 +1523,7 @@ async function startServer() {
         }
       }
 
+      invalidateGasListCache();
       res.json({ ok: true, syncedCount });
     } catch (err) {
       console.error('Sync all drive error:', err);
@@ -1299,122 +1531,126 @@ async function startServer() {
     }
   });
 
-  app.post('/api/drive/backup-scores', async (req, res) => {
-    try {
-      const { assessmentId } = req.body as { assessmentId?: string };
-      const actorRole = String(req.headers['x-user-role'] || '');
-      const actorId = String(req.headers['x-user-id'] || '').trim();
-      const db = await loadDb();
-      let scopedSubmissions = db.submissions;
-      if (actorRole === 'guru') {
-        const assignedIds = new Set(
-          actorId
-            ? db.assessments.filter((a) => a.assignedTeacherId === actorId).map((a) => a.id)
-            : []
-        );
-        scopedSubmissions = scopedSubmissions.filter((s) => assignedIds.has(s.assessmentId));
-      }
-      const targetSubs = assessmentId && assessmentId !== 'all'
-        ? scopedSubmissions.filter((s) => s.assessmentId === assessmentId)
-        : scopedSubmissions;
-
-      const header = [
-        'NISN',
-        'Nama Peserta',
-        'Kelas',
-        'Asesmen',
-        'Nilai Akhir',
-        'Predikat',
-        'Pelanggaran',
-        'Status Keamanan',
-        'Waktu Kumpul',
-      ].join(',');
-
-      const rows = targetSubs.map((s) =>
-        [
-          `"${s.studentNisn}"`,
-          `"${s.studentName.replace(/"/g, '""')}"`,
-          `"${s.className}"`,
-          `"${s.assessmentTitle.replace(/"/g, '""')}"`,
-          s.finalScore,
-          `"${s.predicate}"`,
-          s.violationCount,
-          `"${s.autoSubmittedBySecurity ? 'Terkunci Otomatis' : s.violationCount > 0 ? 'Peringatan' : 'Bersih'}"`,
-          `"${s.submittedAt}"`,
-        ].join(',')
-      );
-
-      const csvContent = [header, ...rows].join('\n');
-      const fileName = `Rekap_Nilai_CBT_Al_Ihsan_${new Date().toISOString().slice(0, 10)}.csv`;
-
-      const gasUrl = process.env.GAS_DRIVE_WEBAPP_URL;
-      const gasSecret = process.env.GAS_API_SECRET || '';
-      let driveResult: { ok: boolean; driveFileId?: string; url?: string } = { ok: false };
-
-      if (gasUrl) {
-        try {
-          const gasRes = await fetch(gasUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              action: 'backupScoresCsv',
-              secret: gasSecret,
-              fileName,
-              csvContent,
-            }),
-          });
-          if (gasRes.ok) {
-            driveResult = (await gasRes.json()) as {
-              ok: boolean;
-              driveFileId?: string;
-              url?: string;
-            };
-          }
-        } catch (gasErr) {
-          console.warn('GAS score backup fallback:', gasErr);
+  app.post(
+    '/api/drive/backup-scores',
+    requireRoles('admin', 'guru'),
+    async (req: AuthedRequest, res) => {
+      try {
+        const { assessmentId } = req.body as { assessmentId?: string };
+        const authUser = req.authUser!;
+        const db = await loadDb();
+        let scopedSubmissions = db.submissions;
+        if (authUser.role === 'guru') {
+          const assignedIds = new Set(
+            db.assessments
+              .filter((a) => a.assignedTeacherId === authUser.id)
+              .map((a) => a.id)
+          );
+          scopedSubmissions = scopedSubmissions.filter((s) => assignedIds.has(s.assessmentId));
         }
+        const targetSubs =
+          assessmentId && assessmentId !== 'all'
+            ? scopedSubmissions.filter((s) => s.assessmentId === assessmentId)
+            : scopedSubmissions;
+
+        const header = [
+          'NISN',
+          'Nama Peserta',
+          'Kelas',
+          'Asesmen',
+          'Nilai Akhir',
+          'Predikat',
+          'Pelanggaran',
+          'Status Keamanan',
+          'Waktu Kumpul',
+        ].join(',');
+
+        const rows = targetSubs.map((s) =>
+          [
+            `"${s.studentNisn}"`,
+            `"${s.studentName.replace(/"/g, '""')}"`,
+            `"${s.className}"`,
+            `"${s.assessmentTitle.replace(/"/g, '""')}"`,
+            s.finalScore,
+            `"${s.predicate}"`,
+            s.violationCount,
+            `"${s.autoSubmittedBySecurity ? 'Terkunci Otomatis' : s.violationCount > 0 ? 'Peringatan' : 'Bersih'}"`,
+            `"${s.submittedAt}"`,
+          ].join(',')
+        );
+
+        const csvContent = [header, ...rows].join('\n');
+        const fileName = `Rekap_Nilai_CBT_Al_Ihsan_${new Date().toISOString().slice(0, 10)}.csv`;
+
+        const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
+        const gasSecret = (process.env.GAS_API_SECRET || '').trim();
+        let driveResult: { ok: boolean; driveFileId?: string; url?: string } = { ok: false };
+
+        if (gasUrl) {
+          try {
+            const gasRes = await fetch(gasUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'backupScoresCsv',
+                secret: gasSecret,
+                fileName,
+                csvContent,
+              }),
+            });
+            if (gasRes.ok) {
+              const parsed = await safeParseJson<{
+                ok: boolean;
+                driveFileId?: string;
+                url?: string;
+              }>(gasRes);
+              if (parsed) driveResult = parsed;
+            }
+          } catch (gasErr) {
+            console.warn('GAS score backup fallback:', gasErr);
+          }
+        }
+
+        ensureUploadsDir();
+        const backupFileName = `${Date.now()}_${sanitizeFilename(fileName)}`;
+        fs.writeFileSync(path.join(UPLOADS_DIR, backupFileName), csvContent, 'utf-8');
+
+        await saveDriveAsset({
+          id: `drv-csv-${Date.now()}`,
+          name: fileName,
+          mimeType: 'text/csv',
+          mediaKind: 'spreadsheet',
+          sizeBytes: Buffer.byteLength(csvContent, 'utf-8'),
+          url: driveResult.url || `/uploads/${backupFileName}`,
+          driveFileId: driveResult.driveFileId,
+          source: driveResult.ok ? 'google_drive_gas' : 'local_madrasah',
+          uploadedBy: 'Backup Otomatis Nilai',
+          createdAt: new Date().toISOString(),
+        });
+
+        await markSubmissionsBackedUpBatch(targetSubs.map((s) => s.id));
+        invalidateGasListCache();
+
+        res.json({
+          ok: true,
+          syncedToGas: driveResult.ok,
+          fileName,
+          count: targetSubs.length,
+          downloadUrl: `/uploads/${backupFileName}`,
+        });
+      } catch (err) {
+        console.error('Backup scores error:', err);
+        res.status(500).json({ error: 'Gagal mencadangkan nilai ke Google Drive.' });
       }
-
-      // Mark records backed up & save local archive copy
-      ensureUploadsDir();
-      const backupFileName = `${Date.now()}_${fileName}`;
-      fs.writeFileSync(path.join(UPLOADS_DIR, backupFileName), csvContent, 'utf-8');
-
-      await saveDriveAsset({
-        id: `drv-csv-${Date.now()}`,
-        name: fileName,
-        mimeType: 'text/csv',
-        mediaKind: 'spreadsheet',
-        sizeBytes: Buffer.byteLength(csvContent, 'utf-8'),
-        url: driveResult.url || `/uploads/${backupFileName}`,
-        driveFileId: driveResult.driveFileId,
-        source: driveResult.ok ? 'google_drive_gas' : 'local_madrasah',
-        uploadedBy: 'Backup Otomatis Nilai',
-        createdAt: new Date().toISOString(),
-      });
-
-      await markSubmissionsBackedUpBatch(targetSubs.map((s) => s.id));
-      invalidateGasListCache();
-
-      res.json({
-        ok: true,
-        syncedToGas: driveResult.ok,
-        fileName,
-        count: targetSubs.length,
-        downloadUrl: `/uploads/${backupFileName}`,
-      });
-    } catch (err) {
-      console.error('Backup scores error:', err);
-      res.status(500).json({ error: 'Gagal mencadangkan nilai ke Google Drive.' });
     }
-  });
+  );
 
-  app.delete('/api/drive/files/:id', async (req, res) => {
+  app.delete('/api/drive/files/:id', requireRoles('admin', 'guru'), async (req, res) => {
     try {
       const db = await loadDb();
       const target = db.driveAssets.find((d) => d.id === req.params.id);
-      const gasUrl = process.env.GAS_DRIVE_WEBAPP_URL;
-      const gasSecret = process.env.GAS_API_SECRET || '';
+      const gasUrl = (process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
+      const gasSecret = (process.env.GAS_API_SECRET || '').trim();
 
       if (gasUrl && target?.driveFileId) {
         try {
@@ -1432,10 +1668,10 @@ async function startServer() {
         }
       }
 
-      await removeDriveAsset(req.params.id);
+      await removeDriveAsset(String(req.params.id));
       invalidateGasListCache();
       res.json({ ok: true });
-    } catch (err) {
+    } catch {
       res.status(500).json({ error: 'Gagal menghapus file.' });
     }
   });

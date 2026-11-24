@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import type { DriveAsset, Question } from '../types/cbt.ts';
+import { authFetch } from '../lib/authClient.ts';
 
 interface ParsedQuestionDraft {
   tempId: string;
@@ -118,12 +119,10 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
         reader.readAsDataURL(file);
       });
 
-      const res = await fetch('/api/questions/parse-document', {
+      const res = await authFetch('/api/questions/parse-document', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-user-role': actorRole,
-          'x-user-id': actorId,
         },
         body: JSON.stringify({
           assessmentId,
@@ -152,12 +151,10 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
     setParsing(true);
     setError(null);
     try {
-      const res = await fetch('/api/questions/parse-document', {
+      const res = await authFetch('/api/questions/parse-document', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-user-role': actorRole,
-          'x-user-id': actorId,
         },
         body: JSON.stringify({
           assessmentId,
@@ -187,12 +184,10 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch('/api/questions/bulk', {
+      const res = await authFetch('/api/questions/bulk', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-user-role': actorRole,
-          'x-user-id': actorId,
         },
         body: JSON.stringify({
           assessmentId,

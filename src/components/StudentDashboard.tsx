@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowRight, BookOpen, CheckCircle2, Clock, KeyRound, LogOut, ShieldAlert, X } from 'lucide-react';
 import type { Assessment, SafeQuestion, SessionUser, SubmissionRecord } from '../types/cbt.ts';
+import { authFetch } from '../lib/authClient.ts';
 
 interface EnrichedAssessment extends Omit<Assessment, 'token'> {
   questionCount: number;
@@ -36,12 +37,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     setLoading(true);
     try {
       const [asmRes, subRes] = await Promise.all([
-        fetch(
-          `/api/assessments?role=student&studentNisn=${encodeURIComponent(
-            user.identifier
-          )}&className=${encodeURIComponent(user.className || '')}`
-        ),
-        fetch(`/api/submissions?studentNisn=${encodeURIComponent(user.identifier)}`),
+        authFetch('/api/assessments'),
+        authFetch('/api/submissions'),
       ]);
       const asmData = await asmRes.json();
       const subData = await subRes.json();
@@ -87,12 +84,11 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         // Fallback allowed if iframe blocks fullscreen, exam room monitors visibility & focus
       }
 
-      const res = await fetch(`/api/assessments/${selectedAssessment.id}/verify-token`, {
+      const res = await authFetch(`/api/assessments/${selectedAssessment.id}/verify-token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           token: tokenInput.trim(),
-          studentNisn: user.identifier,
         }),
       });
       const data = await res.json();
@@ -400,7 +396,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                     type="text"
                     value={tokenInput}
                     onChange={(e) => setTokenInput(e.target.value.toUpperCase())}
-                    placeholder="Contoh: IHSAN6 / AKHLAK5 / AKM2026"
+                    placeholder="Masukkan token sesi ujian dari pengawas"
                     className="w-full pl-10 pr-4 py-2.5 text-sm font-mono uppercase tracking-wider bg-white border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
                   />
                 </div>

@@ -4,6 +4,7 @@ import { ExamResultView } from './components/ExamResultView.tsx';
 import { ExamRoom } from './components/ExamRoom.tsx';
 import { LoginPage } from './components/LoginPage.tsx';
 import { StudentDashboard } from './components/StudentDashboard.tsx';
+import { setAuthToken } from './lib/authClient.ts';
 import type {
   Assessment,
   SafeQuestion,
@@ -40,7 +41,8 @@ export default function App() {
     fetchSiteSettings();
   }, []);
 
-  const handleLoginSuccess = (loggedInUser: SessionUser) => {
+  const handleLoginSuccess = (loggedInUser: SessionUser, token: string) => {
+    setAuthToken(token);
     setUser(loggedInUser);
     if (loggedInUser.role === 'student') {
       setView('student_home');
@@ -50,6 +52,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    setAuthToken(null);
     setUser(null);
     setActiveAssessment(null);
     setActiveQuestions([]);

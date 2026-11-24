@@ -5,6 +5,7 @@ import {
   Database,
   Download,
   Edit3,
+  Eye,
   FileUp,
   FolderOpen,
   LayoutDashboard,
@@ -25,6 +26,7 @@ import { DriveMediaManager, IntegrationConfigPanel } from './IntegrationPanel.ts
 import { LandingSettingsPanel } from './LandingSettingsPanel.tsx';
 import { QuestionEditorModal } from './QuestionEditorModal.tsx';
 import { QuestionImportModal } from './QuestionImportModal.tsx';
+import { StudentExamPreviewModal } from './StudentExamPreviewModal.tsx';
 import { authFetch } from '../lib/authClient.ts';
 import type {
   AntiCheatLog,
@@ -121,6 +123,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
   const [confirmDeleteAsm, setConfirmDeleteAsm] = useState<Assessment | null>(null);
   const [confirmDeleteQuestion, setConfirmDeleteQuestion] = useState<Question | null>(null);
+  const [previewData, setPreviewData] = useState<{
+    assessment: Assessment;
+    questions: Question[];
+    initialIndex: number;
+  } | null>(null);
+  const [loadingPreviewAsmId, setLoadingPreviewAsmId] = useState<string | null>(null);
 
   // User Management (Admin only) - Rombel Kelas 1 s.d. Kelas 6
   const [userSubTab, setUserSubTab] = useState<'students' | 'staff'>('students');
@@ -219,6 +227,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       .then((r) => (r.ok ? r.json() : { questions: [] }))
       .then((d) => setAsmQuestions(d.questions || []));
   }, [selectedAsmForQuestions, user.id, user.role]);
+
+  const handleOpenPreviewForAssessment = async (
+    asm: EnrichedAssessment,
+    initialIndex = 0
+  ) => {
+    if (selectedAsmForQuestions === asm.id && asmQuestions.length > 0) {
+      setPreviewData({
+        assessment: asm,
+        questions: asmQuestions,
+        initialIndex,
+      });
+      return;
+    }
+    setLoadingPreviewAsmId(asm.id);
+    try {
+      const res = await authFetch(`/api/questions/${asm.id}`);
+      const data = res.ok ? await res.json() : { questions: [] };
+      const loadedQuestions: Question[] = data.questions || [];
+      if (loadedQuestions.length > 0) {
+        setPreviewData({
+          assessment: asm,
+          questions: loadedQuestions,
+          initialIndex,
+        });
+      }
+    } finally {
+      setLoadingPreviewAsmId(null);
+    }
+  };
 
   const refreshAssessments = async () => {
     const res = await authFetch('/api/assessments');
@@ -932,7 +969,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               {asm.questionCount} Soal
                             </p>
                           </div>
-                          <div className="flex items-center gap-4 shrink-0">
+                          <div className="flex flex-wrap items-center gap-3 shrink-0">
                             <div className="text-right">
                               <p className="text-[11px] text-slate-500">Token Sesi</p>
                               <p className="text-sm font-bold font-mono tracking-wider text-emerald-700">
@@ -942,6 +979,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <span className="text-xs font-mono tabular-nums text-slate-600">
                               {asm.submissionCount} peserta selesai
                             </span>
+                            {asm.questionCount > 0 && (
+                              <button
+                                type="button"
+                                disabled={loadingPreviewAsmId === asm.id}
+                                onClick={() => handleOpenPreviewForAssessment(asm, 0)}
+                                className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>
+                                  {loadingPreviewAsmId === asm.id
+                                    ? 'Memuat...'
+                                    : 'Preview Soal'}
+                                </span>
+                              </button>
+                            )}
                             {isAdmin && (
                               <button
                                 type="button"
@@ -1332,29 +1384,47 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           : ''}
                       </p>
                     </div>
-                    {canGuruEditSelected && (
-                      <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {asmQuestions.length > 0 && (
                         <button
                           type="button"
-                          onClick={() => setImportModalOpen(true)}
-                          className="px-3.5 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                          onClick={() =>
+                            setPreviewData({
+                              assessment: selectedAssessmentObj,
+                              questions: asmQuestions,
+                              initialIndex: 0,
+                            })
+                          }
+                          className="px-3.5 py-2 bg-emerald-50 border border-emerald-300 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
                         >
-                          <FileUp className="w-4 h-4 text-emerald-700" />
-                          <span>Import Dokumen Soal</span>
+                          <Eye className="w-4 h-4 text-emerald-700" />
+                          <span>Preview Tampilan Siswa</span>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingQuestion(null);
-                            setQuestionEditorOpen(true);
-                          }}
-                          className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-                        >
-                          <Plus className="w-4 h-4" />
-                          <span>Tambah Butir Soal</span>
-                        </button>
-                      </div>
-                    )}
+                      )}
+                      {canGuruEditSelected && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setImportModalOpen(true)}
+                            className="px-3.5 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                          >
+                            <FileUp className="w-4 h-4 text-emerald-700" />
+                            <span>Import Dokumen Soal</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingQuestion(null);
+                              setQuestionEditorOpen(true);
+                            }}
+                            className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                          >
+                            <Plus className="w-4 h-4" />
+                            <span>Tambah Butir Soal</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
 
                   {isAdmin && (
@@ -1373,7 +1443,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </p>
                   ) : (
                     <div className="divide-y divide-slate-100">
-                      {asmQuestions.map((q) => (
+                      {asmQuestions.map((q, qIdx) => (
                         <div
                           key={q.id}
                           className="py-4 flex flex-col md:flex-row md:items-start justify-between gap-4"
@@ -1446,27 +1516,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             </div>
                           </div>
 
-                          {canGuruEditSelected && (
-                            <div className="flex items-center gap-2 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditingQuestion(q);
-                                  setQuestionEditorOpen(true);
-                                }}
-                                className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteQuestion(q)}
-                                className="px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 rounded-lg cursor-pointer"
-                              >
-                                Hapus
-                              </button>
-                            </div>
-                          )}
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPreviewData({
+                                  assessment: selectedAssessmentObj,
+                                  questions: asmQuestions,
+                                  initialIndex: qIdx,
+                                })
+                              }
+                              className="px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Preview</span>
+                            </button>
+                            {canGuruEditSelected && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingQuestion(q);
+                                    setQuestionEditorOpen(true);
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteQuestion(q)}
+                                  className="px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 rounded-lg cursor-pointer"
+                                >
+                                  Hapus
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -2273,6 +2359,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             }
           }}
           onClose={() => setImportModalOpen(false)}
+        />
+      )}
+
+      {/* Interactive Student Exam Preview Modal (Simulasi Tampilan Siswa untuk Guru) */}
+      {previewData && previewData.questions.length > 0 && (
+        <StudentExamPreviewModal
+          assessment={previewData.assessment}
+          questions={previewData.questions}
+          initialQuestionIndex={previewData.initialIndex}
+          viewerName={user.name}
+          onEditQuestion={
+            isGuru && previewData.assessment.assignedTeacherId === user.id
+              ? (q) => {
+                  const targetAsmId = previewData.assessment.id;
+                  setPreviewData(null);
+                  setSelectedAsmForQuestions(targetAsmId);
+                  setEditingQuestion(q);
+                  setQuestionEditorOpen(true);
+                }
+              : undefined
+          }
+          onClose={() => setPreviewData(null)}
         />
       )}
 

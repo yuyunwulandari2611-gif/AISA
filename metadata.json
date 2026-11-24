@@ -1,0 +1,8 @@
+{
+  "name": "Remix CBT MI Ma\u0027arif Al Ihsan Soborejo",
+  "description": "Aplikasi Computer-Based Test (CBT) MI Ma\u0027arif Al Ihsan Soborejo untuk Asesmen Semester, Literasi, dan Numerasi dengan keamanan anti-kecurangan, penilaian otomatis, database Supabase, dan integrasi Google Drive via Google Apps Script.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

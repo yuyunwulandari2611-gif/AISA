@@ -176,8 +176,10 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
 
     const onCopyCutPaste = (e: ClipboardEvent) => {
       const target = e.target as HTMLElement | null;
-      const isEssayField = target?.tagName === 'TEXTAREA';
-      if (!isEssayField || e.type === 'paste') {
+      const isTextInputField =
+        target?.tagName === 'TEXTAREA' ||
+        (target?.tagName === 'INPUT' && (target as HTMLInputElement).type === 'text');
+      if (!isTextInputField || e.type === 'paste') {
         e.preventDefault();
         setSecurityWarning('Aksi salin/tempel (Copy/Paste) diblokir oleh sistem keamanan CBT.');
       }
@@ -247,6 +249,26 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
     });
   };
 
+  const handleSelectCategory = (questionId: string, optionId: string, side: 'A' | 'B') => {
+    setAnswers((prev) => ({
+      ...prev,
+      [questionId]: {
+        questionId,
+        categoryAnswers: {
+          ...(prev[questionId]?.categoryAnswers || {}),
+          [optionId]: side,
+        },
+      },
+    }));
+  };
+
+  const handleShortAnswerChange = (questionId: string, text: string) => {
+    setAnswers((prev) => ({
+      ...prev,
+      [questionId]: { questionId, shortAnswerText: text },
+    }));
+  };
+
   const handleEssayChange = (questionId: string, text: string) => {
     setAnswers((prev) => ({
       ...prev,
@@ -259,6 +281,18 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
     if (!ans) return false;
     if (q.type === 'pg') return Boolean(ans.selectedOptionId);
     if (q.type === 'pgk') return Boolean(ans.selectedOptionIds && ans.selectedOptionIds.length > 0);
+    if (q.type === 'pgk_kategori') {
+      return (
+        q.options.length > 0 &&
+        q.options.every(
+          (o) =>
+            ans.categoryAnswers?.[o.id] === 'A' || ans.categoryAnswers?.[o.id] === 'B'
+        )
+      );
+    }
+    if (q.type === 'isian') {
+      return Boolean(ans.shortAnswerText && ans.shortAnswerText.trim().length > 0);
+    }
     return Boolean(ans.essayText && ans.essayText.trim().length > 0);
   };
 
@@ -340,8 +374,12 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
               {currentQuestion.type === 'pg'
                 ? 'Pilihan Ganda'
                 : currentQuestion.type === 'pgk'
-                  ? 'Pilihan Ganda Kompleks'
-                  : 'Esai Uraian'}
+                  ? 'Pilihan Ganda Kompleks (MCMA)'
+                  : currentQuestion.type === 'pgk_kategori'
+                    ? 'PG Kompleks Kategori'
+                    : currentQuestion.type === 'isian'
+                      ? 'Isian Singkat'
+                      : 'Uraian'}
             </p>
             <span className="text-xs font-mono tabular-nums text-slate-500">
               Bobot {currentQuestion.maxPoints} poin
@@ -428,10 +466,18 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
             <div>
               <p className="text-xs font-semibold text-emerald-700 mb-2">
                 {currentQuestion.type === 'pg'
-                  ? 'Pilih satu jawaban yang paling tepat'
+                  ? 'Pilihan Ganda — Pilih satu jawaban yang paling tepat'
                   : currentQuestion.type === 'pgk'
-                    ? 'Pilihan Ganda Kompleks — Pilih lebih dari satu jawaban yang benar'
-                    : 'Soal Esai — Tuliskan jawaban lengkap dan terstruktur'}
+                    ? 'Pilihan Ganda Kompleks (MCMA) — Pilih lebih dari satu jawaban yang benar'
+                    : currentQuestion.type === 'pgk_kategori'
+                      ? `PG Kompleks Kategori — Tentukan ${(
+                          currentQuestion.categoryLabels ||
+                          currentQuestion.options.find((o) => Array.isArray(o.categoryPair))
+                            ?.categoryPair || ['Sesuai', 'Tidak Sesuai']
+                        ).join(' atau ')} untuk setiap pernyataan`
+                      : currentQuestion.type === 'isian'
+                        ? 'Isian Singkat — Tuliskan jawaban singkat yang tepat'
+                        : 'Soal Uraian — Tuliskan jawaban lengkap dan terstruktur'}
               </p>
               <p className="text-base font-semibold text-slate-900 leading-relaxed">
                 {currentQuestion.prompt}
@@ -480,7 +526,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
               </div>
             )}
 
-            {/* Pilihan Ganda Kompleks (PGK) */}
+            {/* Pilihan Ganda Kompleks MCMA (PGK) */}
             {currentQuestion.type === 'pgk' && (
               <div className="space-y-2.5">
                 {currentQuestion.options.map((opt) => {
@@ -526,7 +572,112 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
               </div>
             )}
 
-            {/* Esai / Uraian */}
+            {/* Pilihan Ganda Kompleks Kategori (Sesuai/Tidak Sesuai, Benar/Salah) */}
+            {currentQuestion.type === 'pgk_kategori' && (() => {
+              const catLabels: [string, string] =
+                currentQuestion.categoryLabels ||
+                currentQuestion.options.find((o) => Array.isArray(o.categoryPair))
+                  ?.categoryPair || ['Sesuai', 'Tidak Sesuai'];
+              const catMap = currentAnswer?.categoryAnswers || {};
+              const completedRows = currentQuestion.options.filter(
+                (o) => catMap[o.id] === 'A' || catMap[o.id] === 'B'
+              ).length;
+
+              return (
+                <div className="space-y-2.5">
+                  <div className="border border-slate-200 rounded-xl overflow-hidden">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-100 border-b border-slate-200 text-xs font-bold text-slate-800">
+                          <th className="py-2.5 px-3">Pernyataan</th>
+                          <th className="py-2.5 px-2.5 text-center w-28">{catLabels[0]}</th>
+                          <th className="py-2.5 px-2.5 text-center w-28">{catLabels[1]}</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-sm">
+                        {currentQuestion.options.map((opt, idx) => {
+                          const picked = catMap[opt.id];
+                          return (
+                            <tr key={opt.id} className="bg-white hover:bg-slate-50/70">
+                              <td className="py-3 px-3 align-top text-slate-800 leading-relaxed">
+                                <span className="font-mono text-xs font-semibold text-slate-500 mr-1.5">
+                                  {idx + 1}.
+                                </span>
+                                <span>{opt.text}</span>
+                                {opt.imageUrl && (
+                                  <img
+                                    src={opt.imageUrl}
+                                    alt={`Pernyataan ${idx + 1}`}
+                                    referrerPolicy="no-referrer"
+                                    className="mt-2 max-h-28 rounded border border-slate-200 bg-white p-0.5 object-contain"
+                                  />
+                                )}
+                              </td>
+                              <td className="py-3 px-2.5 text-center align-middle">
+                                <button
+                                  type="button"
+                                  aria-label={`${catLabels[0]} untuk pernyataan ${idx + 1}`}
+                                  onClick={() =>
+                                    handleSelectCategory(currentQuestion.id, opt.id, 'A')
+                                  }
+                                  className={`w-7 h-7 rounded-full border inline-flex items-center justify-center transition-colors cursor-pointer ${
+                                    picked === 'A'
+                                      ? 'bg-emerald-700 border-emerald-700 text-white'
+                                      : 'bg-white border-slate-300 hover:border-emerald-600'
+                                  }`}
+                                >
+                                  {picked === 'A' && <Check className="w-3.5 h-3.5" />}
+                                </button>
+                              </td>
+                              <td className="py-3 px-2.5 text-center align-middle">
+                                <button
+                                  type="button"
+                                  aria-label={`${catLabels[1]} untuk pernyataan ${idx + 1}`}
+                                  onClick={() =>
+                                    handleSelectCategory(currentQuestion.id, opt.id, 'B')
+                                  }
+                                  className={`w-7 h-7 rounded-full border inline-flex items-center justify-center transition-colors cursor-pointer ${
+                                    picked === 'B'
+                                      ? 'bg-emerald-700 border-emerald-700 text-white'
+                                      : 'bg-white border-slate-300 hover:border-emerald-600'
+                                  }`}
+                                >
+                                  {picked === 'B' && <Check className="w-3.5 h-3.5" />}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-xs text-slate-500 font-mono tabular-nums">
+                    {completedRows} dari {currentQuestion.options.length} pernyataan telah
+                    dikategorikan
+                  </p>
+                </div>
+              );
+            })()}
+
+            {/* Isian Singkat */}
+            {currentQuestion.type === 'isian' && (
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={currentAnswer?.shortAnswerText || ''}
+                  onChange={(e) =>
+                    handleShortAnswerChange(currentQuestion.id, e.target.value)
+                  }
+                  placeholder="Ketik jawaban singkat Anda di sini..."
+                  className="w-full px-4 py-3 text-base font-medium text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
+                />
+                <p className="text-xs text-slate-500">
+                  Tuliskan jawaban singkat dengan tepat (angka atau kata/frasa singkat tanpa spasi berlebih).
+                </p>
+              </div>
+            )}
+
+            {/* Uraian */}
             {currentQuestion.type === 'essay' && (
               <div className="space-y-2">
                 <textarea

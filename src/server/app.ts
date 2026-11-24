@@ -13,6 +13,7 @@ import {
   deleteQuestionsByAssessmentId,
   deleteStaffById,
   deleteStudentById,
+  deleteSubmissionById,
   getDetailedIntegrationStatus,
   getGasConfig,
   getIntegrationStatus,
@@ -46,6 +47,7 @@ import {
   convertDraftToQuestion,
   parseQuestionsDocument,
   parseStructuredText,
+  summarizeParsedDrafts,
   type ParsedQuestionDraft,
 } from './documentParser.ts';
 import {
@@ -852,7 +854,7 @@ export function createApiApp(): express.Express {
   app.get('/api/assessments', requireAuth, async (req: AuthedRequest, res) => {
     try {
       const authUser = req.authUser!;
-      const db = await loadDb();
+      const db = await loadDb({ forceFresh: true });
 
       let assessments = db.assessments;
       if (authUser.role === 'student') {
@@ -900,21 +902,47 @@ export function createApiApp(): express.Express {
           error: 'Judul asesmen, token sesi, dan guru pengampu yang ditugaskan wajib diisi.',
         });
       }
-      const db = await loadDb();
+      const db = await loadDb({ forceFresh: true });
       const teacher = db.admins.find(
         (a) => a.id === payload.assignedTeacherId && a.role === 'guru'
       );
-      const saved = await upsertAssessment({
+      const result = await upsertAssessment({
         ...payload,
         id: payload.id || `asm-${Date.now()}`,
         token: payload.token.trim().toUpperCase(),
         assignedTeacherName: teacher?.name || payload.assignedTeacherName || 'Guru Pengampu',
         createdAt: payload.createdAt || new Date().toISOString(),
       });
-      res.json({ assessment: saved });
+      res.json(result);
     } catch (err) {
       console.error('Save assessment error:', err);
       res.status(500).json({ error: 'Gagal menyimpan jadwal penugasan asesmen.' });
+    }
+  });
+
+  app.patch('/api/assessments/:id/status', requireRoles('admin'), async (req, res) => {
+    try {
+      const { status } = req.body as { status?: Assessment['status'] };
+      if (status !== 'active' && status !== 'draft' && status !== 'archived') {
+        return res.status(400).json({
+          error: 'Status asesmen harus berupa "active", "draft", atau "archived".',
+        });
+      }
+
+      const db = await loadDb({ forceFresh: true });
+      const existing = db.assessments.find((a) => a.id === req.params.id);
+      if (!existing) {
+        return res.status(404).json({ error: 'Jadwal asesmen tidak ditemukan.' });
+      }
+
+      const result = await upsertAssessment({
+        ...existing,
+        status,
+      });
+      res.json(result);
+    } catch (err) {
+      console.error('Toggle assessment status error:', err);
+      res.status(500).json({ error: 'Gagal memperbarui status aktif asesmen.' });
     }
   });
 
@@ -936,7 +964,7 @@ export function createApiApp(): express.Express {
       try {
         const { token } = req.body as { token: string };
         const studentNisn = req.authUser!.identifier;
-        const db = await loadDb();
+        const db = await loadDb({ forceFresh: true });
         const assessment = db.assessments.find((a) => a.id === req.params.id);
         if (!assessment) {
           return res.status(404).json({ error: 'Asesmen tidak ditemukan.' });
@@ -990,6 +1018,14 @@ export function createApiApp(): express.Express {
           prompt: q.prompt,
           options:
             assessment.shuffleQuestions && q.type === 'pg' ? shuffleArray(q.options) : q.options,
+          categoryLabels:
+            q.type === 'pgk_kategori'
+              ? q.categoryLabels ||
+                q.options?.find((o) => Array.isArray(o.categoryPair))?.categoryPair || [
+                  'Sesuai',
+                  'Tidak Sesuai',
+                ]
+              : undefined,
           maxPoints: q.maxPoints,
         }));
 
@@ -1081,12 +1117,7 @@ export function createApiApp(): express.Express {
               format: 'TEKS',
               questions: drafts,
               embeddedImagesCount: 0,
-              summary: {
-                total: drafts.length,
-                pg: drafts.filter((d) => d.type === 'pg').length,
-                pgk: drafts.filter((d) => d.type === 'pgk').length,
-                essay: drafts.filter((d) => d.type === 'essay').length,
-              },
+              summary: summarizeParsedDrafts(drafts),
             },
             uploadedAssets,
           });
@@ -1244,18 +1275,27 @@ export function createApiApp(): express.Express {
       }
       const teacherName = req.authUser!.name || targetAsm.assignedTeacherName || 'Guru Pengampu';
       const safeQuestionImage = await normalizeMediaUrl(payload.imageUrl, teacherName, 'q_img');
-      const safeOptions = await Promise.all(
-        (payload.options || []).map(async (opt) => ({
-          ...opt,
-          imageUrl: opt.imageUrl
-            ? await normalizeMediaUrl(opt.imageUrl, teacherName, `opt_${opt.label || 'x'}`)
-            : undefined,
-        }))
-      );
+      const isTextAnswer = payload.type === 'essay' || payload.type === 'isian';
+      const safeOptions = isTextAnswer
+        ? []
+        : await Promise.all(
+            (payload.options || []).map(async (opt) => ({
+              ...opt,
+              imageUrl: opt.imageUrl
+                ? await normalizeMediaUrl(opt.imageUrl, teacherName, `opt_${opt.label || 'x'}`)
+                : undefined,
+            }))
+          );
       const saved = await upsertQuestion({
         ...payload,
         imageUrl: safeQuestionImage,
         options: safeOptions,
+        categoryLabels:
+          payload.type === 'pgk_kategori'
+            ? payload.categoryLabels && payload.categoryLabels.length === 2
+              ? payload.categoryLabels
+              : ['Sesuai', 'Tidak Sesuai']
+            : undefined,
         prompt: cleanPrompt || 'Perhatikan gambar soal berikut dengan saksama.',
         id: payload.id || `q-${Date.now()}`,
         authorId: actorId,
@@ -1370,7 +1410,7 @@ export function createApiApp(): express.Express {
   app.get('/api/submissions', requireAuth, async (req: AuthedRequest, res) => {
     try {
       const authUser = req.authUser!;
-      const db = await loadDb();
+      const db = await loadDb({ forceFresh: true });
       let list = db.submissions;
 
       if (authUser.role === 'student') {
@@ -1463,6 +1503,43 @@ export function createApiApp(): express.Express {
         res.json({ submission: updated });
       } catch {
         res.status(500).json({ error: 'Gagal memperbarui nilai.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/submissions/:id/reset',
+    requireRoles('admin', 'guru'),
+    async (req: AuthedRequest, res) => {
+      try {
+        const authUser = req.authUser!;
+        const submissionId = String(req.params.id);
+        const db = await loadDb({ forceFresh: true });
+        const existing = db.submissions.find((s) => s.id === submissionId);
+        if (!existing) {
+          return res.status(404).json({ error: 'Data pengerjaan siswa tidak ditemukan.' });
+        }
+
+        if (authUser.role === 'guru') {
+          const asm = db.assessments.find((a) => a.id === existing.assessmentId);
+          if (!asm || asm.assignedTeacherId !== authUser.id) {
+            return res.status(403).json({
+              error: 'Anda hanya dapat mereset peserta pada jadwal asesmen yang ditugaskan kepada Anda.',
+            });
+          }
+        }
+
+        const result = await deleteSubmissionById(existing.id);
+        res.json({
+          ok: true,
+          resetSubmissionId: existing.id,
+          studentName: existing.studentName,
+          assessmentTitle: existing.assessmentTitle,
+          ...result,
+        });
+      } catch (err) {
+        console.error('Reset submission error:', err);
+        res.status(500).json({ error: 'Gagal mereset data ujian peserta.' });
       }
     }
   );

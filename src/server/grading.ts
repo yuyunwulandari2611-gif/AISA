@@ -13,6 +13,21 @@ function normalizeText(input: string): string {
     .trim();
 }
 
+function normalizeShortAnswer(input: string): string {
+  const collapsed = input
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.;!?]+$/, '')
+    .trim();
+  // Normalize numeric Indonesian decimals (e.g., "2,5" or "2,50" -> "2.5")
+  const numericCandidate = collapsed.replace(/(\d),(\d)/g, '$1.$2');
+  if (/^-?\d+(\.\d+)?$/.test(numericCandidate)) {
+    return String(Number(numericCandidate));
+  }
+  return collapsed.replace(/[.,!?;:"'()\[\]{}]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 export function gradeQuestion(
   question: Question,
   answer: StudentAnswerPayload | undefined
@@ -99,12 +114,151 @@ export function gradeQuestion(
       missedKeywords: [],
       feedback:
         status === 'correct'
-          ? `Semua ${correctIds.length} pernyataan benar dipilih dengan tepat.`
+          ? `Semua ${correctIds.length} pernyataan benar (MCMA) dipilih dengan tepat.`
           : `Terpilih ${correctHits} dari ${correctIds.length} pernyataan benar (${wrongHits} pilihan kurang tepat).`,
     };
   }
 
-  // Essay automatic rubric grading using keyword/concept clusters + structured response completeness
+  if (question.type === 'pgk_kategori') {
+    const labels: [string, string] =
+      question.categoryLabels ||
+      question.options.find((o) => Array.isArray(o.categoryPair))?.categoryPair || [
+        'Sesuai',
+        'Tidak Sesuai',
+      ];
+    const statements = question.options || [];
+    const expectedMap = new Map<string, 'A' | 'B'>();
+
+    for (const entry of question.correctOptionIds || []) {
+      const [stmtId, side] = String(entry).split(':');
+      if (stmtId && (side === 'A' || side === 'B')) {
+        expectedMap.set(stmtId, side);
+      } else if (stmtId) {
+        expectedMap.set(stmtId, 'A');
+      }
+    }
+
+    const studentMap = answer?.categoryAnswers || {};
+    let answeredCount = 0;
+    let correctHits = 0;
+    const summaryParts: string[] = [];
+
+    for (const stmt of statements) {
+      const expectedSide = expectedMap.get(stmt.id) || 'A';
+      const pickedSide = studentMap[stmt.id];
+      if (pickedSide === 'A' || pickedSide === 'B') {
+        answeredCount += 1;
+        const labelText = pickedSide === 'A' ? labels[0] : labels[1];
+        summaryParts.push(`${stmt.label}: ${labelText}`);
+        if (pickedSide === expectedSide) {
+          correctHits += 1;
+        }
+      } else {
+        summaryParts.push(`${stmt.label}: (Kosong)`);
+      }
+    }
+
+    if (answeredCount === 0 || statements.length === 0) {
+      return {
+        questionId: question.id,
+        orderNumber: question.orderNumber,
+        type: question.type,
+        domain: question.domain,
+        prompt: question.prompt,
+        studentAnswerText: 'Tidak dijawab',
+        maxPoints,
+        earnedPoints: 0,
+        status: 'incorrect',
+        matchedKeywords: [],
+        missedKeywords: [],
+        feedback: `Belum ada kategori (${labels[0]} / ${labels[1]}) yang dipilih.`,
+      };
+    }
+
+    const ratio = correctHits / statements.length;
+    const earned = Math.round(ratio * maxPoints * 100) / 100;
+    const status =
+      correctHits === statements.length
+        ? 'correct'
+        : correctHits > 0
+          ? 'partial'
+          : 'incorrect';
+
+    return {
+      questionId: question.id,
+      orderNumber: question.orderNumber,
+      type: question.type,
+      domain: question.domain,
+      prompt: question.prompt,
+      studentAnswerText: summaryParts.join(' | '),
+      maxPoints,
+      earnedPoints: earned,
+      status,
+      matchedKeywords: [],
+      missedKeywords: [],
+      feedback:
+        status === 'correct'
+          ? `Semua ${statements.length} pernyataan dikategorikan tepat (${labels[0]} / ${labels[1]}).`
+          : `${correctHits} dari ${statements.length} pernyataan dikategorikan dengan tepat.`,
+    };
+  }
+
+  if (question.type === 'isian') {
+    const rawShort = (answer?.shortAnswerText ?? answer?.essayText ?? '').trim();
+    const rawKeys =
+      question.essayKeywords && question.essayKeywords.length > 0
+        ? question.essayKeywords
+        : question.essaySampleAnswer
+          ? question.essaySampleAnswer.split(/[,;|]+/).map((s) => s.trim()).filter(Boolean)
+          : [];
+    const acceptedVariants = rawKeys
+      .flatMap((entry) => entry.split('|'))
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (!rawShort) {
+      return {
+        questionId: question.id,
+        orderNumber: question.orderNumber,
+        type: question.type,
+        domain: question.domain,
+        prompt: question.prompt,
+        studentAnswerText: 'Tidak dijawab',
+        maxPoints,
+        earnedPoints: 0,
+        status: 'incorrect',
+        matchedKeywords: [],
+        missedKeywords: acceptedVariants.slice(0, 1),
+        feedback: 'Jawaban isian singkat masih kosong.',
+      };
+    }
+
+    const normalizedStudent = normalizeShortAnswer(rawShort);
+    const matchedVariant = acceptedVariants.find(
+      (variant) => normalizeShortAnswer(variant) === normalizedStudent
+    );
+    const isCorrect = Boolean(matchedVariant);
+    const displayKey = question.essaySampleAnswer?.trim() || acceptedVariants[0] || '-';
+
+    return {
+      questionId: question.id,
+      orderNumber: question.orderNumber,
+      type: question.type,
+      domain: question.domain,
+      prompt: question.prompt,
+      studentAnswerText: rawShort,
+      maxPoints,
+      earnedPoints: isCorrect ? maxPoints : 0,
+      status: isCorrect ? 'correct' : 'incorrect',
+      matchedKeywords: matchedVariant ? [matchedVariant] : [],
+      missedKeywords: isCorrect ? [] : [displayKey],
+      feedback: isCorrect
+        ? 'Jawaban isian singkat tepat sesuai kunci jawaban.'
+        : `Belum tepat. Kunci jawaban singkat: ${displayKey}.`,
+    };
+  }
+
+  // Essay / Uraian automatic rubric grading using keyword/concept clusters + structured response completeness
   const rawEssay = (answer?.essayText || '').trim();
   const normalizedEssay = normalizeText(rawEssay);
   const keywordGroups = question.essayKeywords || [];
@@ -122,7 +276,7 @@ export function gradeQuestion(
       status: 'incorrect',
       matchedKeywords: [],
       missedKeywords: keywordGroups.map((k) => k.split('|')[0]),
-      feedback: 'Jawaban esai masih kosong.',
+      feedback: 'Jawaban uraian masih kosong.',
     };
   }
 

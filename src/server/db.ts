@@ -202,16 +202,26 @@ const EXPECTED_SUPABASE_TABLES = [
 ] as const;
 
 let supabaseClient: SupabaseClient | null = null;
+function getSupabaseUrl(): string {
+  return (
+    process.env.SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    ''
+  ).trim();
+}
+
 function getSupabaseSecretKey(): string {
   return (
     process.env.SUPABASE_SECRET_KEY ||
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY ||
     ''
   ).trim();
 }
 
 export function getSupabase(): SupabaseClient | null {
-  const url = (process.env.SUPABASE_URL || '').trim();
+  const url = getSupabaseUrl();
   const key = getSupabaseSecretKey();
   if (!url || !key) return null;
   if (!supabaseClient) {
@@ -394,9 +404,15 @@ export async function saveGasConfig(params: {
 }
 
 export function getIntegrationStatus(): IntegrationStatus {
-  const supabaseUrl = (process.env.SUPABASE_URL || '').trim();
+  const supabaseUrl = getSupabaseUrl();
   const supabaseKey = getSupabaseSecretKey();
-  const supabasePublishable = (process.env.SUPABASE_PUBLISHABLE_KEY || '').trim();
+  const supabasePublishable = (
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    ''
+  ).trim();
   const supabaseJwksUrl = (process.env.SUPABASE_JWKS_URL || '').trim();
   const gasUrl = (cachedGasConfig?.webappUrl || process.env.GAS_DRIVE_WEBAPP_URL || '').trim();
   const gasFolder = (cachedGasConfig?.folderId || process.env.GAS_DRIVE_FOLDER_ID || '').trim();
@@ -411,9 +427,13 @@ export function getIntegrationStatus(): IntegrationStatus {
     }
   }
 
-  const supabaseConfigured = Boolean(supabaseUrl && supabaseKey);
+  const supabaseUrlConfigured = Boolean(supabaseUrl);
+  const supabaseSecretConfigured = Boolean(supabaseKey);
+  const supabaseConfigured = supabaseUrlConfigured && supabaseSecretConfigured;
   return {
     supabaseConfigured,
+    supabaseUrlConfigured,
+    supabaseSecretConfigured,
     supabaseProjectHost: host,
     supabasePublishableConfigured: Boolean(supabasePublishable),
     supabaseJwksUrl: supabaseJwksUrl || null,
@@ -430,6 +450,7 @@ export function getIntegrationStatus(): IntegrationStatus {
           ? 'env'
           : 'none',
     storageMode: supabaseConfigured ? 'supabase' : 'local_persistent',
+    runtimePlatform: process.env.VERCEL ? 'vercel' : 'node',
   };
 }
 
@@ -440,6 +461,16 @@ export async function testSupabaseConnection(): Promise<SupabaseTestResult> {
   const rawKey = getSupabaseSecretKey();
 
   if (!sb) {
+    const missingVars: string[] = [];
+    if (!base.supabaseUrlConfigured) missingVars.push('SUPABASE_URL');
+    if (!base.supabaseSecretConfigured) {
+      missingVars.push('SUPABASE_SECRET_KEY / SUPABASE_SERVICE_ROLE_KEY');
+    }
+    const targetHint =
+      base.runtimePlatform === 'vercel'
+        ? 'Tambahkan di Vercel Project Settings -> Environment Variables, lalu klik Redeploy.'
+        : 'Atur di panel Secrets (AI Studio) atau Environment Variables server hosting (seperti Vercel -> Redeploy).';
+
     return {
       configured: false,
       connected: false,
@@ -447,8 +478,7 @@ export async function testSupabaseConnection(): Promise<SupabaseTestResult> {
       latencyMs: Date.now() - started,
       projectHost: base.supabaseProjectHost,
       tables: [],
-      error:
-        'SUPABASE_URL atau SUPABASE_SECRET_KEY (atau SUPABASE_SERVICE_ROLE_KEY) belum disetel pada environment server.',
+      error: `Variabel server belum terbaca: ${missingVars.join(' dan ')}. ${targetHint}`,
     };
   }
 
@@ -611,11 +641,25 @@ function mapAssessmentToDb(a: Assessment) {
 }
 
 function mapQuestionFromDb(row: Record<string, any>): Question {
+  const rawOptions: Question['options'] = Array.isArray(row.options) ? row.options : [];
+  const metaTypeOpt = rawOptions.find((o) => o?.id === '__meta_type__');
+  const legacyActualType =
+    (metaTypeOpt?.text as Question['type'] | undefined) ||
+    (rawOptions.find((o: any) => typeof o?.actualType === 'string') as any)?.actualType;
+  const resolvedType: Question['type'] =
+    legacyActualType === 'pgk_kategori' || legacyActualType === 'isian'
+      ? legacyActualType
+      : row.type;
+  const options = rawOptions.filter((o) => o?.id !== '__meta_type__');
+  const inferredPair = options.find((o) => Array.isArray(o?.categoryPair) && o.categoryPair.length === 2)?.categoryPair;
+  const rawLabels = Array.isArray(row.category_labels) && row.category_labels.length === 2
+    ? (row.category_labels as [string, string])
+    : inferredPair;
   return {
     id: row.id,
     assessmentId: row.assessment_id,
     orderNumber: row.order_number,
-    type: row.type,
+    type: resolvedType,
     domain: row.domain,
     cognitiveLevel: row.cognitive_level,
     stimulusTitle: row.stimulus_title || undefined,
@@ -625,7 +669,11 @@ function mapQuestionFromDb(row: Record<string, any>): Question {
     videoUrl: row.video_url || undefined,
     videoCaption: row.video_caption || undefined,
     prompt: row.prompt,
-    options: row.options || [],
+    options,
+    categoryLabels:
+      resolvedType === 'pgk_kategori'
+        ? rawLabels || ['Sesuai', 'Tidak Sesuai']
+        : undefined,
     correctOptionId: row.correct_option_id || undefined,
     correctOptionIds: row.correct_option_ids || [],
     essayKeywords: row.essay_keywords || [],
@@ -636,12 +684,43 @@ function mapQuestionFromDb(row: Record<string, any>): Question {
   };
 }
 
-function mapQuestionToDb(q: Question) {
+function mapQuestionToDb(q: Question, legacySafe = false) {
+  let serializedOptions: any[] = (q.options || []).map((opt, idx) => {
+    if (q.type === 'pgk_kategori' && idx === 0) {
+      return {
+        ...opt,
+        categoryPair: q.categoryLabels || opt.categoryPair || ['Sesuai', 'Tidak Sesuai'],
+        ...(legacySafe ? { actualType: 'pgk_kategori' } : {}),
+      };
+    }
+    return opt;
+  });
+
+  let dbType: string = q.type;
+  if (legacySafe) {
+    if (q.type === 'pgk_kategori') {
+      dbType = 'pgk';
+      if (serializedOptions.length === 0) {
+        serializedOptions = [
+          {
+            id: '__meta_type__',
+            label: '__TYPE__',
+            text: 'pgk_kategori',
+            categoryPair: q.categoryLabels || ['Sesuai', 'Tidak Sesuai'],
+          },
+        ];
+      }
+    } else if (q.type === 'isian') {
+      dbType = 'essay';
+      serializedOptions = [{ id: '__meta_type__', label: '__TYPE__', text: 'isian' }];
+    }
+  }
+
   return {
     id: q.id,
     assessment_id: q.assessmentId,
     order_number: q.orderNumber,
-    type: q.type,
+    type: dbType,
     domain: q.domain,
     cognitive_level: q.cognitiveLevel,
     stimulus_title: q.stimulusTitle || null,
@@ -651,7 +730,7 @@ function mapQuestionToDb(q: Question) {
     video_url: q.videoUrl || null,
     video_caption: q.videoCaption || null,
     prompt: q.prompt,
-    options: q.options || [],
+    options: serializedOptions,
     correct_option_id: q.correctOptionId || null,
     correct_option_ids: q.correctOptionIds || [],
     essay_keywords: q.essayKeywords || [],
@@ -979,7 +1058,11 @@ export async function getSubmissionById(id: string): Promise<SubmissionRecord | 
   return db.submissions.find((s) => s.id === id) || null;
 }
 
-export async function upsertAssessment(assessment: Assessment): Promise<Assessment> {
+export async function upsertAssessment(assessment: Assessment): Promise<{
+  assessment: Assessment;
+  savedToSupabase: boolean;
+  storageWarning?: string;
+}> {
   const dbData = ensureLocalStore();
   const idx = dbData.assessments.findIndex((a) => a.id === assessment.id);
   if (idx >= 0) dbData.assessments[idx] = assessment;
@@ -992,11 +1075,25 @@ export async function upsertAssessment(assessment: Assessment): Promise<Assessme
     else cachedDb.assessments.unshift(assessment);
   }
 
+  let savedToSupabase = false;
+  let storageWarning: string | undefined;
   const sb = getSupabase();
   if (sb) {
-    await sb.from('assessments').upsert(mapAssessmentToDb(assessment));
+    try {
+      const { error } = await sb.from('assessments').upsert(mapAssessmentToDb(assessment));
+      if (error) {
+        storageWarning = `Jadwal asesmen tersimpan sementara di server lokal, namun Supabase mengembalikan error: ${error.message}`;
+      } else {
+        savedToSupabase = true;
+      }
+    } catch (err) {
+      storageWarning =
+        err instanceof Error
+          ? `Jadwal asesmen tersimpan lokal, namun gagal sinkron ke Supabase: ${err.message}`
+          : 'Jadwal asesmen tersimpan lokal, namun gagal sinkron ke Supabase.';
+    }
   }
-  return assessment;
+  return { assessment, savedToSupabase, storageWarning };
 }
 
 export async function deleteAssessmentById(id: string): Promise<void> {
@@ -1031,7 +1128,17 @@ export async function upsertQuestion(question: Question): Promise<Question> {
 
   const sb = getSupabase();
   if (sb) {
-    await sb.from('questions').upsert(mapQuestionToDb(question));
+    const { error } = await sb.from('questions').upsert(mapQuestionToDb(question, false));
+    if (error) {
+      if (/check constraint|questions_type_check/i.test(error.message)) {
+        const retry = await sb.from('questions').upsert(mapQuestionToDb(question, true));
+        if (retry.error) {
+          console.warn('[CBT] Supabase upsertQuestion retry warning:', retry.error.message);
+        }
+      } else {
+        console.warn('[CBT] Supabase upsertQuestion warning:', error.message);
+      }
+    }
   }
   return question;
 }
@@ -1056,7 +1163,17 @@ export async function upsertQuestionsBatch(questions: Question[]): Promise<Quest
 
   const sb = getSupabase();
   if (sb) {
-    await sb.from('questions').upsert(questions.map(mapQuestionToDb));
+    const { error } = await sb.from('questions').upsert(questions.map((q) => mapQuestionToDb(q, false)));
+    if (error) {
+      if (/check constraint|questions_type_check/i.test(error.message)) {
+        const retry = await sb.from('questions').upsert(questions.map((q) => mapQuestionToDb(q, true)));
+        if (retry.error) {
+          console.warn('[CBT] Supabase upsertQuestionsBatch retry warning:', retry.error.message);
+        }
+      } else {
+        console.warn('[CBT] Supabase upsertQuestionsBatch warning:', error.message);
+      }
+    }
   }
   return questions;
 }
@@ -1113,6 +1230,40 @@ export async function saveSubmission(submission: SubmissionRecord): Promise<Subm
     await sb.from('submissions').upsert(mapSubmissionToDb(submission));
   }
   return submission;
+}
+
+export async function deleteSubmissionById(id: string): Promise<{
+  savedToSupabase: boolean;
+  storageWarning?: string;
+}> {
+  const dbData = ensureLocalStore();
+  dbData.submissions = dbData.submissions.filter((s) => s.id !== id);
+  saveLocalStore(dbData);
+
+  hydratedSubmissionDetails.delete(id);
+  if (cachedDb) {
+    cachedDb.submissions = cachedDb.submissions.filter((s) => s.id !== id);
+  }
+
+  let savedToSupabase = false;
+  let storageWarning: string | undefined;
+  const sb = getSupabase();
+  if (sb) {
+    try {
+      const { error } = await sb.from('submissions').delete().eq('id', id);
+      if (error) {
+        storageWarning = `Data nilai direset di server lokal, namun Supabase mengembalikan error: ${error.message}`;
+      } else {
+        savedToSupabase = true;
+      }
+    } catch (err) {
+      storageWarning =
+        err instanceof Error
+          ? `Data nilai direset lokal, namun gagal sinkron ke Supabase: ${err.message}`
+          : 'Data nilai direset lokal, namun gagal sinkron ke Supabase.';
+    }
+  }
+  return { savedToSupabase, storageWarning };
 }
 
 export async function markSubmissionsBackedUpBatch(ids: string[]): Promise<void> {

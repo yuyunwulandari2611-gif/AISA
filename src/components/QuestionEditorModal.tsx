@@ -49,6 +49,26 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
   onSave,
   onClose,
 }) => {
+  const initialCategoryLabels: [string, string] =
+    initialQuestion?.categoryLabels ||
+    initialQuestion?.options?.find((o) => Array.isArray(o.categoryPair))?.categoryPair || [
+      'Sesuai',
+      'Tidak Sesuai',
+    ];
+
+  const buildInitialCategoryAnswers = (): Record<string, 'A' | 'B'> => {
+    const map: Record<string, 'A' | 'B'> = {};
+    if (initialQuestion?.type === 'pgk_kategori') {
+      for (const entry of initialQuestion.correctOptionIds || []) {
+        const [optId, side] = String(entry).split(':');
+        if (optId && (side === 'A' || side === 'B')) {
+          map[optId] = side;
+        }
+      }
+    }
+    return map;
+  };
+
   const [type, setType] = useState<QuestionType>(initialQuestion?.type || 'pg');
   const [orderNumber, setOrderNumber] = useState(
     initialQuestion?.orderNumber || nextOrderNumber
@@ -72,11 +92,18 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
   const [options, setOptions] = useState<QuestionOption[]>(
     initialQuestion?.options?.length ? initialQuestion.options : DEFAULT_OPTIONS
   );
+  const [categoryLabelA, setCategoryLabelA] = useState(initialCategoryLabels[0]);
+  const [categoryLabelB, setCategoryLabelB] = useState(initialCategoryLabels[1]);
+  const [categoryAnswers, setCategoryAnswers] = useState<Record<string, 'A' | 'B'>>(
+    buildInitialCategoryAnswers
+  );
   const [correctOptionId, setCorrectOptionId] = useState(
     initialQuestion?.correctOptionId || 'opt-a'
   );
   const [correctOptionIds, setCorrectOptionIds] = useState<string[]>(
-    initialQuestion?.correctOptionIds || ['opt-a', 'opt-b']
+    initialQuestion?.type === 'pgk'
+      ? initialQuestion?.correctOptionIds || ['opt-a', 'opt-b']
+      : ['opt-a', 'opt-b']
   );
   const [essayKeywordsText, setEssayKeywordsText] = useState(
     (initialQuestion?.essayKeywords || []).join(', ')
@@ -207,13 +234,51 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
         .map((k) => k.trim())
         .filter(Boolean);
 
-      const normalizedOptions =
-        type === 'essay'
-          ? []
-          : options.map((o) => ({
+      const isTextAnswer = type === 'essay' || type === 'isian';
+      const pair: [string, string] = [
+        categoryLabelA.trim() || 'Sesuai',
+        categoryLabelB.trim() || 'Tidak Sesuai',
+      ];
+
+      const activeOptions = isTextAnswer
+        ? []
+        : options
+            .filter((o) => o.text.trim().length > 0 || Boolean(o.imageUrl))
+            .map((o, idx) => ({
               ...o,
               text: o.text.trim() || (o.imageUrl ? `Pilihan ${o.label}` : ''),
+              ...(type === 'pgk_kategori' && idx === 0 ? { categoryPair: pair } : {}),
             }));
+
+      if (!isTextAnswer && activeOptions.length < 2) {
+        setError(
+          type === 'pgk_kategori'
+            ? 'Masukkan minimal 2 pernyataan untuk soal PG Kompleks Kategori.'
+            : 'Masukkan minimal 2 pilihan jawaban.'
+        );
+        setSaving(false);
+        return;
+      }
+
+      if (type === 'isian' && parsedKeywords.length === 0 && !essaySampleAnswer.trim()) {
+        setError('Masukkan minimal 1 kunci jawaban untuk soal Isian Singkat.');
+        setSaving(false);
+        return;
+      }
+
+      const categoryKeyEntries =
+        type === 'pgk_kategori'
+          ? activeOptions.map((o) => `${o.id}:${categoryAnswers[o.id] || 'A'}`)
+          : [];
+
+      const isianKeywords =
+        type === 'isian'
+          ? parsedKeywords.length > 0
+            ? parsedKeywords
+            : essaySampleAnswer.trim()
+              ? [essaySampleAnswer.trim()]
+              : []
+          : [];
 
       const question: Question = {
         id: initialQuestion?.id || `q-${Date.now()}`,
@@ -229,11 +294,20 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
         videoUrl: videoUrl.trim() || undefined,
         videoCaption: videoCaption.trim() || undefined,
         prompt: cleanPrompt || 'Perhatikan gambar soal berikut dengan saksama.',
-        options: normalizedOptions,
+        options: activeOptions,
+        categoryLabels: type === 'pgk_kategori' ? pair : undefined,
         correctOptionId: type === 'pg' ? correctOptionId : undefined,
-        correctOptionIds: type === 'pgk' ? correctOptionIds : [],
-        essayKeywords: type === 'essay' ? parsedKeywords : [],
-        essaySampleAnswer: type === 'essay' ? essaySampleAnswer.trim() || undefined : undefined,
+        correctOptionIds:
+          type === 'pgk'
+            ? correctOptionIds
+            : type === 'pgk_kategori'
+              ? categoryKeyEntries
+              : [],
+        essayKeywords:
+          type === 'essay' ? parsedKeywords : type === 'isian' ? isianKeywords : [],
+        essaySampleAnswer: isTextAnswer
+          ? essaySampleAnswer.trim() || isianKeywords[0]?.split('|')[0]?.trim() || undefined
+          : undefined,
         maxPoints: Number(maxPoints),
         authorId: initialQuestion?.authorId || authorId,
         authorName: initialQuestion?.authorName || uploaderName,
@@ -294,12 +368,23 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
               <label className="block text-xs font-medium text-slate-700 mb-1">Model Soal</label>
               <select
                 value={type}
-                onChange={(e) => setType(e.target.value as QuestionType)}
+                onChange={(e) => {
+                  const nextType = e.target.value as QuestionType;
+                  setType(nextType);
+                  if (
+                    (nextType === 'pg' || nextType === 'pgk' || nextType === 'pgk_kategori') &&
+                    options.length === 0
+                  ) {
+                    setOptions(DEFAULT_OPTIONS);
+                  }
+                }}
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
               >
                 <option value="pg">Pilihan Ganda</option>
-                <option value="pgk">Pilihan Ganda Kompleks</option>
-                <option value="essay">Esai Uraian</option>
+                <option value="pgk">Pilihan Ganda Kompleks (MCMA)</option>
+                <option value="pgk_kategori">PG Kompleks Kategori</option>
+                <option value="isian">Isian Singkat</option>
+                <option value="essay">Uraian</option>
               </select>
             </div>
             <div>
@@ -613,14 +698,32 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
             </div>
           </div>
 
-          {/* Answer Key Section (with easy Option Images!) */}
-          {type !== 'essay' ? (
+          {/* Answer Key Section (5 Question Types) */}
+          {(type === 'pg' || type === 'pgk') && (
             <div className="space-y-3 pt-2 border-t border-slate-100">
-              <p className="text-xs font-semibold text-slate-800">
-                {type === 'pg'
-                  ? 'Pilihan Jawaban & Kunci Tunggal (Teks dan/atau Gambar Opsi)'
-                  : 'Pilihan Jawaban & Kunci Kompleks (Centang semua jawaban benar)'}
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-slate-800">
+                  {type === 'pg'
+                    ? 'Pilihan Jawaban & Kunci Tunggal (Teks dan/atau Gambar Opsi)'
+                    : 'Pilihan Jawaban & Kunci Kompleks MCMA (Centang semua jawaban benar)'}
+                </p>
+                {options.length < 5 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextIdx = options.length;
+                      const letter = String.fromCharCode(65 + nextIdx);
+                      setOptions((prev) => [
+                        ...prev,
+                        { id: `opt-${letter.toLowerCase()}`, label: letter, text: '' },
+                      ]);
+                    }}
+                    className="text-xs font-semibold text-emerald-700 hover:underline cursor-pointer"
+                  >
+                    + Tambah Opsi {String.fromCharCode(65 + options.length)}
+                  </button>
+                )}
+              </div>
               {options.map((opt, idx) => {
                 const isSelected =
                   type === 'pg'
@@ -713,10 +816,220 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
                 );
               })}
             </div>
-          ) : (
-            <div className="space-y-3 p-4 rounded-lg bg-slate-50 border border-slate-200">
+          )}
+
+          {type === 'pgk_kategori' && (
+            <div className="space-y-3 p-4 rounded-xl bg-slate-50 border border-slate-200">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-slate-900">
+                  Pengaturan Pilihan Ganda Kompleks Kategori
+                </p>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCategoryLabelA('Sesuai');
+                      setCategoryLabelB('Tidak Sesuai');
+                    }}
+                    className={`px-2.5 py-1 rounded text-[11px] font-semibold border cursor-pointer ${
+                      categoryLabelA === 'Sesuai' && categoryLabelB === 'Tidak Sesuai'
+                        ? 'bg-emerald-700 border-emerald-700 text-white'
+                        : 'bg-white border-slate-300 text-slate-700'
+                    }`}
+                  >
+                    Sesuai – Tidak Sesuai
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCategoryLabelA('Benar');
+                      setCategoryLabelB('Salah');
+                    }}
+                    className={`px-2.5 py-1 rounded text-[11px] font-semibold border cursor-pointer ${
+                      categoryLabelA === 'Benar' && categoryLabelB === 'Salah'
+                        ? 'bg-emerald-700 border-emerald-700 text-white'
+                        : 'bg-white border-slate-300 text-slate-700'
+                    }`}
+                  >
+                    Benar – Salah
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCategoryLabelA('Setuju');
+                      setCategoryLabelB('Tidak Setuju');
+                    }}
+                    className={`px-2.5 py-1 rounded text-[11px] font-semibold border cursor-pointer ${
+                      categoryLabelA === 'Setuju' && categoryLabelB === 'Tidak Setuju'
+                        ? 'bg-emerald-700 border-emerald-700 text-white'
+                        : 'bg-white border-slate-300 text-slate-700'
+                    }`}
+                  >
+                    Setuju – Tidak Setuju
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                    Label Kolom Kategori 1
+                  </label>
+                  <input
+                    type="text"
+                    value={categoryLabelA}
+                    onChange={(e) => setCategoryLabelA(e.target.value)}
+                    placeholder="Contoh: Sesuai / Benar"
+                    className="w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg font-semibold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                    Label Kolom Kategori 2
+                  </label>
+                  <input
+                    type="text"
+                    value={categoryLabelB}
+                    onChange={(e) => setCategoryLabelB(e.target.value)}
+                    placeholder="Contoh: Tidak Sesuai / Salah"
+                    className="w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg font-semibold"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium text-slate-700">
+                    Daftar Pernyataan &amp; Kunci Kategori
+                  </p>
+                  {options.length < 6 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextIdx = options.length;
+                        const letter = String.fromCharCode(65 + nextIdx);
+                        setOptions((prev) => [
+                          ...prev,
+                          { id: `opt-${letter.toLowerCase()}`, label: letter, text: '' },
+                        ]);
+                      }}
+                      className="text-xs font-semibold text-emerald-700 hover:underline cursor-pointer"
+                    >
+                      + Tambah Pernyataan
+                    </button>
+                  )}
+                </div>
+
+                {options.map((opt, idx) => {
+                  const selectedSide = categoryAnswers[opt.id] || 'A';
+                  const labelA = categoryLabelA.trim() || 'Sesuai';
+                  const labelB = categoryLabelB.trim() || 'Tidak Sesuai';
+                  return (
+                    <div
+                      key={opt.id}
+                      className="flex flex-col sm:flex-row sm:items-center gap-2 p-2.5 rounded-lg bg-white border border-slate-200"
+                    >
+                      <span className="text-xs font-bold font-mono text-slate-500 w-6 shrink-0">
+                        {idx + 1}.
+                      </span>
+                      <input
+                        type="text"
+                        value={opt.text}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setOptions((prev) =>
+                            prev.map((item, i) => (i === idx ? { ...item, text: val } : item))
+                          );
+                        }}
+                        placeholder={`Tuliskan pernyataan ke-${idx + 1}...`}
+                        className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-lg"
+                      />
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCategoryAnswers((prev) => ({ ...prev, [opt.id]: 'A' }))
+                          }
+                          className={`px-2.5 py-1.5 rounded-md border text-xs font-semibold cursor-pointer ${
+                            selectedSide === 'A'
+                              ? 'bg-emerald-700 border-emerald-700 text-white'
+                              : 'bg-slate-50 border-slate-300 text-slate-700'
+                          }`}
+                        >
+                          {labelA}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCategoryAnswers((prev) => ({ ...prev, [opt.id]: 'B' }))
+                          }
+                          className={`px-2.5 py-1.5 rounded-md border text-xs font-semibold cursor-pointer ${
+                            selectedSide === 'B'
+                              ? 'bg-slate-900 border-slate-900 text-white'
+                              : 'bg-slate-50 border-slate-300 text-slate-700'
+                          }`}
+                        >
+                          {labelB}
+                        </button>
+                        {options.length > 2 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOptions((prev) => prev.filter((_, i) => i !== idx))
+                            }
+                            aria-label="Hapus pernyataan"
+                            className="p-1.5 text-slate-400 hover:text-red-700 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {type === 'isian' && (
+            <div className="space-y-3 p-4 rounded-xl bg-slate-50 border border-slate-200">
               <p className="text-xs font-semibold text-slate-900">
-                Rubrik Penilaian Otomatis Soal Esai
+                Kunci Jawaban Isian Singkat (Penilaian Otomatis)
+              </p>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Variasi Kunci Jawaban Benar (pisahkan dengan koma atau | untuk sinonim/format angka)
+                </label>
+                <input
+                  type="text"
+                  value={essayKeywordsText}
+                  onChange={(e) => setEssayKeywordsText(e.target.value)}
+                  placeholder="Contoh: 72 | tujuh puluh dua  atau  Jakarta | DKI Jakarta"
+                  className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Jawaban Singkat Utama (Ditampilkan sebagai kunci referensi)
+                </label>
+                <input
+                  type="text"
+                  value={essaySampleAnswer}
+                  onChange={(e) => setEssaySampleAnswer(e.target.value)}
+                  placeholder="Contoh: 72"
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                />
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Pencocokan otomatis tidak peka huruf besar/kecil serta menerima variasi tanda baca dan desimal koma/titik (misal 2,5 = 2.5).
+              </p>
+            </div>
+          )}
+
+          {type === 'essay' && (
+            <div className="space-y-3 p-4 rounded-xl bg-slate-50 border border-slate-200">
+              <p className="text-xs font-semibold text-slate-900">
+                Rubrik Penilaian Otomatis Soal Uraian
               </p>
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">

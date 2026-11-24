@@ -1,6 +1,6 @@
 export type UserRole = 'student' | 'guru' | 'admin';
 
-export type QuestionType = 'pg' | 'pgk' | 'essay';
+export type QuestionType = 'pg' | 'pgk' | 'pgk_kategori' | 'isian' | 'essay';
 
 export type QuestionDomain =
   | 'Literasi Membaca'
@@ -21,6 +21,7 @@ export interface QuestionOption {
   label: string;
   text: string;
   imageUrl?: string;
+  categoryPair?: [string, string];
 }
 
 export interface Question {
@@ -38,6 +39,7 @@ export interface Question {
   videoCaption?: string;
   prompt: string;
   options: QuestionOption[];
+  categoryLabels?: [string, string];
   correctOptionId?: string;
   correctOptionIds?: string[];
   essayKeywords?: string[];
@@ -105,6 +107,8 @@ export interface StudentAnswerPayload {
   questionId: string;
   selectedOptionId?: string;
   selectedOptionIds?: string[];
+  categoryAnswers?: Record<string, 'A' | 'B'>;
+  shortAnswerText?: string;
   essayText?: string;
 }
 
@@ -189,6 +193,8 @@ export interface DriveAsset {
 
 export interface IntegrationStatus {
   supabaseConfigured: boolean;
+  supabaseUrlConfigured?: boolean;
+  supabaseSecretConfigured?: boolean;
   supabaseProjectHost: string | null;
   supabasePublishableConfigured: boolean;
   supabaseJwksUrl: string | null;
@@ -200,6 +206,7 @@ export interface IntegrationStatus {
   gasSecretConfigured: boolean;
   gasConfigSource: 'admin_panel' | 'env' | 'none';
   storageMode: 'supabase' | 'local_persistent';
+  runtimePlatform?: 'vercel' | 'node';
 }
 
 export interface SupabaseTableCheck {

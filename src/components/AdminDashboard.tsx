@@ -11,6 +11,8 @@ import {
   LayoutTemplate,
   LogOut,
   Plus,
+  Power,
+  RotateCcw,
   Search,
   ShieldAlert,
   Trash2,
@@ -96,11 +98,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [savingCalibration, setSavingCalibration] = useState(false);
   const [backingUpDrive, setBackingUpDrive] = useState(false);
   const [backupFeedback, setBackupFeedback] = useState<string | null>(null);
+  const [confirmResetSub, setConfirmResetSub] = useState<SubmissionRecord | null>(null);
+  const [resettingSubId, setResettingSubId] = useState<string | null>(null);
+  const [gradebookFeedback, setGradebookFeedback] = useState<{
+    type: 'success' | 'warning' | 'error';
+    text: string;
+  } | null>(null);
 
   // Assessment & Question Bank states
   const [editingAssessment, setEditingAssessment] = useState<Assessment | null>(null);
   const [showAssessmentModal, setShowAssessmentModal] = useState(false);
   const [assessmentError, setAssessmentError] = useState<string | null>(null);
+  const [togglingAssessmentId, setTogglingAssessmentId] = useState<string | null>(null);
+  const [assessmentStatusFeedback, setAssessmentStatusFeedback] = useState<{
+    type: 'success' | 'warning' | 'error';
+    text: string;
+  } | null>(null);
   const [selectedAsmForQuestions, setSelectedAsmForQuestions] = useState<string | null>(null);
   const [asmQuestions, setAsmQuestions] = useState<Question[]>([]);
   const [questionEditorOpen, setQuestionEditorOpen] = useState(false);
@@ -312,6 +325,51 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  const handleConfirmResetSubmission = async () => {
+    if (!confirmResetSub) return;
+    const target = confirmResetSub;
+    setResettingSubId(target.id);
+    setGradebookFeedback(null);
+    try {
+      const res = await authFetch(`/api/submissions/${encodeURIComponent(target.id)}/reset`, {
+        method: 'POST',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setGradebookFeedback({
+          type: 'error',
+          text: data.error || 'Gagal mereset data pengerjaan siswa.',
+        });
+        setConfirmResetSub(null);
+        return;
+      }
+
+      setSubmissions((prev) => prev.filter((s) => s.id !== target.id));
+      if (selectedSubmission?.id === target.id) {
+        setSelectedSubmission(null);
+      }
+      setConfirmResetSub(null);
+      await refreshAssessments();
+
+      if (data.storageWarning) {
+        setGradebookFeedback({ type: 'warning', text: data.storageWarning });
+      } else {
+        setGradebookFeedback({
+          type: 'success',
+          text: `Ujian "${target.assessmentTitle}" untuk ${target.studentName} (NISN ${target.studentNisn}) berhasil direset. Peserta kini dapat mengerjakan ulang untuk perbaikan/remedial.`,
+        });
+      }
+    } catch {
+      setGradebookFeedback({
+        type: 'error',
+        text: 'Terjadi gangguan jaringan saat mereset ujian peserta.',
+      });
+      setConfirmResetSub(null);
+    } finally {
+      setResettingSubId(null);
+    }
+  };
+
   const filteredSubmissions = submissions.filter((s) => {
     const matchesAsm =
       gradeAssessmentFilter === 'all' || s.assessmentId === gradeAssessmentFilter;
@@ -385,6 +443,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleSaveAssessment = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setAssessmentError(null);
+    setAssessmentStatusFeedback(null);
     const fd = new FormData(e.currentTarget);
     const assignedTeacherId = String(fd.get('assignedTeacherId') || '');
     const assignedTeacher = staffList.find((s) => s.id === assignedTeacherId);
@@ -416,14 +475,75 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       },
       body: JSON.stringify(payload),
     });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      setAssessmentError(err.error || 'Gagal menyimpan jadwal penugasan asesmen.');
+      setAssessmentError(data.error || 'Gagal menyimpan jadwal penugasan asesmen.');
       return;
+    }
+    if (data.storageWarning) {
+      setAssessmentStatusFeedback({ type: 'warning', text: data.storageWarning });
+    } else {
+      setAssessmentStatusFeedback({
+        type: 'success',
+        text: `Jadwal "${payload.title}" berhasil disimpan dengan status ${
+          payload.status === 'active' ? 'Aktif' : 'Nonaktif (Draft)'
+        }.`,
+      });
     }
     setShowAssessmentModal(false);
     setEditingAssessment(null);
     await refreshAssessments();
+  };
+
+  const handleToggleAssessmentStatus = async (asm: EnrichedAssessment) => {
+    const nextStatus: Assessment['status'] = asm.status === 'active' ? 'draft' : 'active';
+    setTogglingAssessmentId(asm.id);
+    setAssessmentStatusFeedback(null);
+    try {
+      const res = await authFetch(`/api/assessments/${encodeURIComponent(asm.id)}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAssessmentStatusFeedback({
+          type: 'error',
+          text: data.error || 'Gagal mengubah status aktif asesmen.',
+        });
+        return;
+      }
+
+      setAssessments((prev) =>
+        prev.map((item) =>
+          item.id === asm.id ? { ...item, status: data.assessment?.status || nextStatus } : item
+        )
+      );
+
+      if (data.storageWarning) {
+        setAssessmentStatusFeedback({
+          type: 'warning',
+          text: data.storageWarning,
+        });
+      } else {
+        setAssessmentStatusFeedback({
+          type: 'success',
+          text:
+            nextStatus === 'active'
+              ? `Asesmen "${asm.title}" telah DIAKTIFKAN dan tampil di dasbor peserta ujian.`
+              : `Asesmen "${asm.title}" telah DINONAKTIFKAN dan disembunyikan dari peserta ujian.`,
+        });
+      }
+    } catch {
+      setAssessmentStatusFeedback({
+        type: 'error',
+        text: 'Terjadi gangguan jaringan saat mengubah status asesmen.',
+      });
+    } finally {
+      setTogglingAssessmentId(null);
+    }
   };
 
   const handleSaveQuestion = async (question: Question) => {
@@ -781,36 +901,72 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         : 'Belum ada jadwal asesmen yang terdaftar.'}
                     </p>
                   ) : (
-                    assessments.map((asm) => (
-                      <div
-                        key={asm.id}
-                        className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                      >
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900">{asm.title}</p>
-                          <p className="text-xs text-slate-500 mt-0.5">
-                            {asm.category} · {asm.gradeLevel} · Pengampu:{' '}
-                            <span className="font-medium text-slate-700">
-                              {asm.assignedTeacherName || 'Belum ditugaskan'}
-                            </span>
-                            {asm.scheduledDate ? ` · ${asm.scheduledDate}` : ''}
-                            {asm.scheduleWindow ? ` (${asm.scheduleWindow})` : ''} ·{' '}
-                            {asm.questionCount} Soal
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-4 shrink-0">
-                          <div className="text-right">
-                            <p className="text-[11px] text-slate-500">Token Sesi</p>
-                            <p className="text-sm font-bold font-mono tracking-wider text-emerald-700">
-                              {asm.token}
+                    assessments.map((asm) => {
+                      const isActive = asm.status === 'active';
+                      const isToggling = togglingAssessmentId === asm.id;
+                      return (
+                        <div
+                          key={asm.id}
+                          className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                        >
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-semibold text-slate-900">{asm.title}</p>
+                              <span
+                                className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${
+                                  isActive
+                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                    : 'bg-slate-100 text-slate-600 border-slate-200'
+                                }`}
+                              >
+                                {isActive ? 'Aktif' : 'Nonaktif'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                              {asm.category} · {asm.gradeLevel} · Pengampu:{' '}
+                              <span className="font-medium text-slate-700">
+                                {asm.assignedTeacherName || 'Belum ditugaskan'}
+                              </span>
+                              {asm.scheduledDate ? ` · ${asm.scheduledDate}` : ''}
+                              {asm.scheduleWindow ? ` (${asm.scheduleWindow})` : ''} ·{' '}
+                              {asm.questionCount} Soal
                             </p>
                           </div>
-                          <span className="text-xs font-mono tabular-nums text-slate-600">
-                            {asm.submissionCount} peserta selesai
-                          </span>
+                          <div className="flex items-center gap-4 shrink-0">
+                            <div className="text-right">
+                              <p className="text-[11px] text-slate-500">Token Sesi</p>
+                              <p className="text-sm font-bold font-mono tracking-wider text-emerald-700">
+                                {asm.token}
+                              </p>
+                            </div>
+                            <span className="text-xs font-mono tabular-nums text-slate-600">
+                              {asm.submissionCount} peserta selesai
+                            </span>
+                            {isAdmin && (
+                              <button
+                                type="button"
+                                disabled={isToggling}
+                                onClick={() => handleToggleAssessmentStatus(asm)}
+                                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60 ${
+                                  isActive
+                                    ? 'bg-white border-amber-300 text-amber-800 hover:bg-amber-50'
+                                    : 'bg-emerald-700 border-emerald-700 text-white hover:bg-emerald-800'
+                                }`}
+                              >
+                                <Power className="w-3.5 h-3.5" />
+                                <span>
+                                  {isToggling
+                                    ? 'Menyimpan...'
+                                    : isActive
+                                      ? 'Nonaktifkan'
+                                      : 'Aktifkan'}
+                                </span>
+                              </button>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -857,6 +1013,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               {backupFeedback && (
                 <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs">
                   {backupFeedback}
+                </div>
+              )}
+
+              {gradebookFeedback && (
+                <div
+                  role="alert"
+                  className={`p-3 rounded-lg border text-xs leading-relaxed ${
+                    gradebookFeedback.type === 'success'
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      : gradebookFeedback.type === 'warning'
+                        ? 'bg-amber-50 border-amber-200 text-amber-950'
+                        : 'bg-red-50 border-red-200 text-red-800'
+                  }`}
+                >
+                  {gradebookFeedback.text}
                 </div>
               )}
 
@@ -925,14 +1096,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           {sub.finalScore}
                         </td>
                         <td className="py-3 px-4 text-xs text-slate-700">{sub.predicate}</td>
-                        <td className="py-3 px-4 text-right">
-                          <button
-                            type="button"
-                            onClick={() => openCalibrationDrawer(sub)}
-                            className="text-xs font-semibold text-emerald-700 hover:underline whitespace-nowrap cursor-pointer"
-                          >
-                            Rincian &amp; Kalibrasi
-                          </button>
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center justify-end gap-3">
+                            <button
+                              type="button"
+                              onClick={() => openCalibrationDrawer(sub)}
+                              className="text-xs font-semibold text-emerald-700 hover:underline whitespace-nowrap cursor-pointer"
+                            >
+                              Rincian &amp; Kalibrasi
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setGradebookFeedback(null);
+                                setConfirmResetSub(sub);
+                              }}
+                              className="text-xs font-semibold text-amber-800 hover:underline inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              <span>Reset / Remedial</span>
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -962,7 +1146,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <p className="text-xs text-slate-600 mt-1">
                     {isAdmin
                       ? 'Administrator mengatur paket asesmen, jenjang kelas (Kelas 1–6), jadwal sesi, dan menugaskan Guru Pengampu pembuat soal.'
-                      : 'Guru Pengampu menyusun dan menyunting butir soal (PG, PG Kompleks, Esai, Gambar & Video) khusus pada jadwal yang ditugaskan oleh Admin.'}
+                      : 'Guru Pengampu menyusun dan menyunting butir soal (PG, PGK MCMA, PGK Kategori, Isian Singkat, Uraian, Gambar & Video) khusus pada jadwal yang ditugaskan oleh Admin.'}
                   </p>
                 </div>
                 {isAdmin && (
@@ -980,6 +1164,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </button>
                 )}
               </div>
+
+              {assessmentStatusFeedback && (
+                <div
+                  className={`p-3 rounded-lg border text-xs leading-relaxed ${
+                    assessmentStatusFeedback.type === 'success'
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      : assessmentStatusFeedback.type === 'warning'
+                        ? 'bg-amber-50 border-amber-200 text-amber-950'
+                        : 'bg-red-50 border-red-200 text-red-800'
+                  }`}
+                >
+                  {assessmentStatusFeedback.text}
+                </div>
+              )}
 
               {/* Assessment Cards List */}
               {assessments.length === 0 ? (
@@ -999,6 +1197,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   {assessments.map((asm) => {
                     const isSelected = selectedAsmForQuestions === asm.id;
+                    const isActive = asm.status === 'active';
+                    const isToggling = togglingAssessmentId === asm.id;
                     return (
                       <div
                         key={asm.id}
@@ -1011,12 +1211,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       >
                         <div>
                           <div className="flex items-start justify-between gap-2">
-                            <p className="text-[11px] font-medium text-slate-500">
-                              {asm.gradeLevel} · {asm.status === 'active' ? 'Aktif' : 'Draft'}
-                            </p>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-[11px] font-medium text-slate-500">
+                                {asm.gradeLevel}
+                              </span>
+                              <span
+                                className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${
+                                  isActive
+                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                    : 'bg-slate-100 text-slate-600 border-slate-200'
+                                }`}
+                              >
+                                {isActive ? 'Aktif · Terbit' : 'Nonaktif (Draft)'}
+                              </span>
+                            </div>
                             {isAdmin && (
                               <div
-                                className="flex items-center gap-1"
+                                className="flex items-center gap-1 shrink-0"
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 <button
@@ -1065,9 +1276,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           )}
                         </div>
 
-                        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-mono tabular-nums text-slate-600">
-                          <span>Token: {asm.token}</span>
-                          <span>{asm.questionCount} soal</span>
+                        <div className="mt-4 pt-3 border-t border-slate-100 space-y-2.5">
+                          <div className="flex items-center justify-between text-xs font-mono tabular-nums text-slate-600">
+                            <span>Token: {asm.token}</span>
+                            <span>{asm.questionCount} soal</span>
+                          </div>
+                          {isAdmin && (
+                            <div onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                disabled={isToggling}
+                                onClick={() => handleToggleAssessmentStatus(asm)}
+                                className={`w-full py-1.5 px-3 text-xs font-semibold rounded-lg border inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60 ${
+                                  isActive
+                                    ? 'bg-white border-amber-300 text-amber-800 hover:bg-amber-50'
+                                    : 'bg-emerald-700 border-emerald-700 text-white hover:bg-emerald-800'
+                                }`}
+                              >
+                                <Power className="w-3.5 h-3.5" />
+                                <span>
+                                  {isToggling
+                                    ? 'Memperbarui Status...'
+                                    : isActive
+                                      ? 'Nonaktifkan Asesmen'
+                                      : 'Aktifkan Asesmen'}
+                                </span>
+                              </button>
+                            </div>
+                          )}
                         </div>
                       </div>
                     );
@@ -1157,8 +1393,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 {q.type === 'pg'
                                   ? 'Pilihan Ganda'
                                   : q.type === 'pgk'
-                                    ? 'Pilihan Ganda Kompleks'
-                                    : 'Esai Rubrik'}{' '}
+                                    ? 'PG Kompleks (MCMA)'
+                                    : q.type === 'pgk_kategori'
+                                      ? `PGK Kategori (${(
+                                          q.categoryLabels ||
+                                          q.options?.find((o) => Array.isArray(o.categoryPair))
+                                            ?.categoryPair || ['Sesuai', 'Tidak Sesuai']
+                                        ).join(' / ')})`
+                                      : q.type === 'isian'
+                                        ? 'Isian Singkat'
+                                        : 'Uraian'}{' '}
                                 · {q.domain} · {q.cognitiveLevel} · {q.maxPoints} poin
                                 {q.imageUrl ? ' · Lampiran Gambar' : ''}
                                 {q.options?.some((o) => Boolean(o.imageUrl)) ? ' · Opsi Bergambar' : ''}
@@ -1168,6 +1412,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               <p className="text-xs text-slate-500">
                                 Penyusun: {q.authorName || selectedAssessmentObj.assignedTeacherName || 'Guru Pengampu'}
                               </p>
+                              {q.type === 'pgk_kategori' && q.options.length > 0 && (
+                                <p className="text-xs text-emerald-700 font-mono">
+                                  {q.options.length} pernyataan kategori · Kunci:{' '}
+                                  {q.options
+                                    .map((opt, idx) => {
+                                      const labels =
+                                        q.categoryLabels ||
+                                        q.options.find((o) => Array.isArray(o.categoryPair))
+                                          ?.categoryPair || ['Sesuai', 'Tidak Sesuai'];
+                                      const entry = (q.correctOptionIds || []).find((k) =>
+                                        k.startsWith(`${opt.id}:`)
+                                      );
+                                      const side = entry?.split(':')[1] === 'B' ? labels[1] : labels[0];
+                                      return `${idx + 1}:${side}`;
+                                    })
+                                    .join(', ')}
+                                </p>
+                              )}
+                              {q.type === 'isian' && (
+                                <p className="text-xs text-emerald-700 font-mono">
+                                  Kunci isian singkat:{' '}
+                                  {(q.essayKeywords && q.essayKeywords.length > 0
+                                    ? q.essayKeywords.join(', ')
+                                    : q.essaySampleAnswer) || '-'}
+                                </p>
+                              )}
                               {q.type === 'essay' && q.essayKeywords && q.essayKeywords.length > 0 && (
                                 <p className="text-xs text-emerald-700 font-mono">
                                   Kata kunci rubrik: {q.essayKeywords.join(', ')}
@@ -1922,7 +2192,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
                   >
                     <option value="active">Aktif (Terbit untuk Peserta)</option>
-                    <option value="draft">Draft (Disembunyikan)</option>
+                    <option value="draft">Nonaktif / Draft (Disembunyikan)</option>
                   </select>
                 </div>
                 <div className="space-y-2 pt-4">
@@ -2083,7 +2353,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     >
                       <div className="flex items-start justify-between gap-3">
                         <p className="text-xs font-semibold text-slate-500">
-                          Soal {item.orderNumber} · {item.type.toUpperCase()} · {item.domain}
+                          Soal {item.orderNumber} ·{' '}
+                          {item.type === 'pg'
+                            ? 'PG'
+                            : item.type === 'pgk'
+                              ? 'PGK MCMA'
+                              : item.type === 'pgk_kategori'
+                                ? 'PGK Kategori'
+                                : item.type === 'isian'
+                                  ? 'Isian Singkat'
+                                  : 'Uraian'}{' '}
+                          · {item.domain}
                         </p>
                         <div className="flex items-center gap-2">
                           <label className="text-xs text-slate-600">Skor:</label>
@@ -2117,8 +2397,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             </div>
 
-            {selectedSubmission.gradedItems.length > 0 && (
-              <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-3 shrink-0">
+            <div className="px-6 py-4 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setGradebookFeedback(null);
+                  setConfirmResetSub(selectedSubmission);
+                }}
+                className="px-3.5 py-2 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 hover:bg-amber-100 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reset Ujian (Remedial)</span>
+              </button>
+              <div className="flex items-center gap-3 ml-auto">
                 <button
                   type="button"
                   onClick={() => setSelectedSubmission(null)}
@@ -2126,21 +2417,62 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 >
                   Tutup
                 </button>
-                <button
-                  type="button"
-                  disabled={savingCalibration}
-                  onClick={() => handleSaveCalibration(false)}
-                  className="px-5 py-2 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg cursor-pointer"
-                >
-                  {savingCalibration ? 'Menyimpan...' : 'Simpan Kalibrasi Nilai'}
-                </button>
+                {selectedSubmission.gradedItems.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={savingCalibration}
+                    onClick={() => handleSaveCalibration(false)}
+                    className="px-5 py-2 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg cursor-pointer"
+                  >
+                    {savingCalibration ? 'Menyimpan...' : 'Simpan Kalibrasi Nilai'}
+                  </button>
+                )}
               </div>
-            )}
+            </div>
           </div>
         </div>
       )}
 
       {/* Confirmation Modals (Zero window.confirm) */}
+      {confirmResetSub && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-6 shadow-xl">
+            <h3 className="text-base font-bold text-slate-900">
+              Reset Ujian Peserta (Perbaikan / Remedial)?
+            </h3>
+            <p className="text-sm text-slate-600 mt-2 leading-relaxed">
+              Hasil pengerjaan <strong>{confirmResetSub.studentName}</strong> (NISN{' '}
+              <span className="font-mono">{confirmResetSub.studentNisn}</span>) pada{' '}
+              <strong>{confirmResetSub.assessmentTitle}</strong> (Nilai:{' '}
+              <strong className="font-mono">{confirmResetSub.finalScore}</strong>) akan direset agar
+              peserta dapat masuk dan mengerjakan ujian lagi.
+            </p>
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                type="button"
+                disabled={resettingSubId === confirmResetSub.id}
+                onClick={() => setConfirmResetSub(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 rounded-lg cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={resettingSubId === confirmResetSub.id}
+                onClick={handleConfirmResetSubmission}
+                className="px-4 py-2 text-xs font-semibold text-white bg-amber-700 hover:bg-amber-800 disabled:opacity-60 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>
+                  {resettingSubId === confirmResetSub.id
+                    ? 'Mereset...'
+                    : 'Ya, Reset untuk Remedial'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {confirmDeleteAsm && (
         <div className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4">
           <div className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-6 shadow-xl">

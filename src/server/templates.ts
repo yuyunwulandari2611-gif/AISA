@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS public.questions (
   id TEXT PRIMARY KEY,
   assessment_id TEXT NOT NULL REFERENCES public.assessments(id) ON DELETE CASCADE,
   order_number INTEGER NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('pg', 'pgk', 'essay')),
+  type TEXT NOT NULL CHECK (type IN ('pg', 'pgk', 'pgk_kategori', 'isian', 'essay')),
   domain TEXT NOT NULL,
   cognitive_level TEXT NOT NULL,
   stimulus_title TEXT,
@@ -139,6 +139,16 @@ CREATE TABLE IF NOT EXISTS public.site_settings (
 ALTER TABLE public.site_settings ADD COLUMN IF NOT EXISTS gas_webapp_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE public.site_settings ADD COLUMN IF NOT EXISTS gas_folder_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE public.site_settings ADD COLUMN IF NOT EXISTS gas_api_secret TEXT NOT NULL DEFAULT '';
+
+-- Migrasi aman agar tabel questions yang sudah ada mendukung 5 tipe soal AKM (PG, PGK MCMA, PGK Kategori, Isian Singkat, Uraian)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'questions') THEN
+    ALTER TABLE public.questions DROP CONSTRAINT IF EXISTS questions_type_check;
+    ALTER TABLE public.questions
+      ADD CONSTRAINT questions_type_check CHECK (type IN ('pg', 'pgk', 'pgk_kategori', 'isian', 'essay'));
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_questions_assessment ON public.questions(assessment_id);
 CREATE INDEX IF NOT EXISTS idx_assessments_teacher ON public.assessments(assigned_teacher_id);

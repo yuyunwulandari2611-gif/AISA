@@ -10,13 +10,13 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import type { DriveAsset, Question } from '../types/cbt.ts';
+import type { DriveAsset, Question, QuestionType } from '../types/cbt.ts';
 import { authFetch } from '../lib/authClient.ts';
 
 interface ParsedQuestionDraft {
   tempId: string;
   orderNumber: number;
-  type: 'pg' | 'pgk' | 'essay';
+  type: QuestionType;
   domain: string;
   cognitiveLevel: string;
   stimulusTitle?: string;
@@ -27,6 +27,7 @@ interface ParsedQuestionDraft {
   videoCaption?: string;
   prompt: string;
   options: { id: string; label: string; text: string }[];
+  categoryLabels?: [string, string];
   correctOptionId?: string;
   correctOptionIds?: string[];
   essayKeywords?: string[];
@@ -39,6 +40,8 @@ interface ParseSummary {
   total: number;
   pg: number;
   pgk: number;
+  pgk_kategori: number;
+  isian: number;
   essay: number;
 }
 
@@ -252,7 +255,8 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
                 Unduh Format Template Dokumen Resmi AISA
               </p>
               <p className="text-xs text-slate-600">
-                Mendukung unggahan <strong>.docx</strong> (termasuk gambar di dalam Word),{' '}
+                Mendukung seluruh 5 tipe soal (<strong>PG, PGK MCMA, PGK Kategori, Isian Singkat, Uraian</strong>)
+                dari <strong>.docx</strong> (termasuk gambar di Word),{' '}
                 <strong>.xlsx / .xls / .csv</strong>, <strong>.txt / .md</strong>, dan{' '}
                 <strong>.json</strong>.
               </p>
@@ -388,8 +392,9 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
                     Hasil Pembacaan Dokumen ({importFormat})
                   </p>
                   <p className="text-xs text-emerald-800 font-mono tabular-nums mt-0.5">
-                    Total {summary.total} soal · {summary.pg} Pilihan Ganda · {summary.pgk} PG
-                    Kompleks · {summary.essay} Esai
+                    Total {summary.total} soal · {summary.pg} PG · {summary.pgk} PGK MCMA ·{' '}
+                    {summary.pgk_kategori} PGK Kategori · {summary.isian} Isian Singkat ·{' '}
+                    {summary.essay} Uraian
                     {embeddedImagesCount > 0
                       ? ` · ${embeddedImagesCount} gambar otomatis diunggah (${
                           uploadedAssets.filter((a) => a.source === 'google_drive_gas').length > 0
@@ -470,8 +475,12 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
                                 {q.type === 'pg'
                                   ? 'Pilihan Ganda'
                                   : q.type === 'pgk'
-                                    ? 'PG Kompleks'
-                                    : 'Esai'}
+                                    ? 'PG Kompleks (MCMA)'
+                                    : q.type === 'pgk_kategori'
+                                      ? `PGK Kategori (${(q.categoryLabels || ['Sesuai', 'Tidak Sesuai']).join(' / ')})`
+                                      : q.type === 'isian'
+                                        ? 'Isian Singkat'
+                                        : 'Uraian'}
                               </span>{' '}
                               · {q.domain} · {q.cognitiveLevel} · {q.maxPoints} poin
                             </p>
@@ -499,7 +508,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
 
                           <p className="text-sm font-medium text-slate-900">{q.prompt}</p>
 
-                          {q.type !== 'essay' ? (
+                          {(q.type === 'pg' || q.type === 'pgk') && (
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs">
                               {q.options.map((opt) => {
                                 const isKey =
@@ -522,7 +531,62 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
                                 );
                               })}
                             </div>
-                          ) : (
+                          )}
+
+                          {q.type === 'pgk_kategori' && (
+                            <div className="border border-slate-200 rounded-lg overflow-hidden text-xs">
+                              <div className="grid grid-cols-12 bg-slate-100 px-3 py-1.5 font-semibold text-slate-700">
+                                <div className="col-span-8">Pernyataan</div>
+                                <div className="col-span-4 text-right">Kunci Kategori</div>
+                              </div>
+                              <div className="divide-y divide-slate-100">
+                                {q.options.map((opt, idx) => {
+                                  const labels = q.categoryLabels || ['Sesuai', 'Tidak Sesuai'];
+                                  const entry = (q.correctOptionIds || []).find((k) =>
+                                    k.startsWith(`${opt.id}:`)
+                                  );
+                                  const side = entry?.split(':')[1] === 'B' ? 'B' : 'A';
+                                  return (
+                                    <div
+                                      key={opt.id}
+                                      className="grid grid-cols-12 items-center px-3 py-1.5 bg-white gap-2"
+                                    >
+                                      <div className="col-span-8 text-slate-800">
+                                        <span className="font-mono text-slate-500 mr-1.5">
+                                          {idx + 1}.
+                                        </span>
+                                        {opt.text}
+                                      </div>
+                                      <div className="col-span-4 text-right">
+                                        <span
+                                          className={`inline-block px-2 py-0.5 rounded font-semibold ${
+                                            side === 'A'
+                                              ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                              : 'bg-slate-100 text-slate-800 border border-slate-300'
+                                          }`}
+                                        >
+                                          {side === 'A' ? labels[0] : labels[1]}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {q.type === 'isian' && (
+                            <div className="text-xs text-slate-600 space-y-1">
+                              <p className="font-mono text-emerald-700">
+                                Kunci isian singkat:{' '}
+                                {(q.essayKeywords && q.essayKeywords.length > 0
+                                  ? q.essayKeywords.join(', ')
+                                  : q.essaySampleAnswer) || '-'}
+                              </p>
+                            </div>
+                          )}
+
+                          {q.type === 'essay' && (
                             <div className="text-xs text-slate-600 space-y-1">
                               {q.essayKeywords && q.essayKeywords.length > 0 && (
                                 <p className="font-mono text-emerald-700">

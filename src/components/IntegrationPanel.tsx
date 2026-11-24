@@ -602,25 +602,23 @@ export const IntegrationConfigPanel: React.FC<IntegrationConfigPanelProps> = ({
 
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-              <p className="text-[11px] text-slate-500">URL &amp; Secret Key Server</p>
+              <p className="text-[11px] text-slate-500">SUPABASE_URL</p>
               <p
                 className={`font-semibold mt-0.5 ${
-                  status?.supabaseConfigured ? 'text-emerald-700' : 'text-amber-700'
+                  status?.supabaseUrlConfigured ? 'text-emerald-700' : 'text-red-700'
                 }`}
               >
-                {status?.supabaseConfigured ? 'Tersetel' : 'Belum Lengkap'}
+                {status?.supabaseUrlConfigured ? 'Tersetel' : 'Belum terbaca'}
               </p>
             </div>
             <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-              <p className="text-[11px] text-slate-500">Publishable &amp; JWKS</p>
+              <p className="text-[11px] text-slate-500">SUPABASE_SECRET_KEY</p>
               <p
                 className={`font-semibold mt-0.5 ${
-                  status?.supabasePublishableConfigured && status?.supabaseJwksUrl
-                    ? 'text-emerald-700'
-                    : 'text-slate-600'
+                  status?.supabaseSecretConfigured ? 'text-emerald-700' : 'text-red-700'
                 }`}
               >
-                {status?.supabasePublishableConfigured ? 'Tersetel' : 'Opsional / Belum'}
+                {status?.supabaseSecretConfigured ? 'Tersetel' : 'Belum terbaca'}
               </p>
             </div>
           </div>
@@ -693,8 +691,27 @@ export const IntegrationConfigPanel: React.FC<IntegrationConfigPanelProps> = ({
               {status?.supabaseConfigured
                 ? status.supabaseTablesReady
                   ? `Terhubung ke ${status.supabaseProjectHost} dengan seluruh 8 tabel aktif. Klik "Uji Koneksi Supabase" kapan saja untuk memeriksa latensi & jumlah baris.`
-                  : `Host ${status.supabaseProjectHost} terkonfigurasi, namun tabel berikut belum ditemukan: ${status.supabaseMissingTables.join(', ') || 'perlu dicek'}. Klik "Uji Koneksi Supabase" untuk diagnosa rinci atau jalankan skrip SQL di bawah.`
-                : 'Variabel SUPABASE_URL dan SUPABASE_SECRET_KEY (atau SUPABASE_SERVICE_ROLE_KEY) belum terbaca oleh server ini. Atur pada Secrets / Vercel Environment Variables lalu klik "Uji Koneksi Supabase".'}
+                  : `Host ${status.supabaseProjectHost} terkonfigurasi, namun tabel berikut perlu dicek: ${status.supabaseMissingTables.join(', ') || 'perlu dicek'}. Klik "Uji Koneksi Supabase" untuk diagnosa rinci atau jalankan skrip SQL di bawah.`
+                : 'Variabel SUPABASE_URL dan SUPABASE_SECRET_KEY (atau SUPABASE_SERVICE_ROLE_KEY) belum terbaca oleh server ini. Jika Anda membuka versi Vercel, tambahkan variabel tersebut di Vercel Dashboard -> Settings -> Environment Variables, lalu lakukan Redeploy.'}
+            </div>
+          )}
+
+          {status && !status.supabaseConfigured && (
+            <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-950 space-y-1.5">
+              <p className="font-bold">Cara Mengaktifkan Supabase di Vercel / Server:</p>
+              <ol className="list-decimal list-inside space-y-1 text-[11px] leading-relaxed">
+                <li>
+                  Buka <span className="font-semibold">Vercel Dashboard → Project Anda → Settings → Environment Variables</span> (atau panel <span className="font-semibold">Secrets</span> di pratinjau).
+                </li>
+                <li>
+                  Tambahkan <code className="font-mono bg-amber-100 px-1 rounded">SUPABASE_URL</code> dan{' '}
+                  <code className="font-mono bg-amber-100 px-1 rounded">SUPABASE_SECRET_KEY</code> (atau{' '}
+                  <code className="font-mono bg-amber-100 px-1 rounded">SUPABASE_SERVICE_ROLE_KEY</code>) untuk environment Production &amp; Preview.
+                </li>
+                <li>
+                  Lakukan <span className="font-semibold">Redeploy</span> di Vercel agar variabel terbaca oleh server, lalu klik <span className="font-semibold">Uji Koneksi Supabase</span> lagi.
+                </li>
+              </ol>
             </div>
           )}
         </div>

@@ -174,8 +174,12 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                       {item.type === 'pg'
                         ? 'Pilihan Ganda'
                         : item.type === 'pgk'
-                          ? 'Pilihan Ganda Kompleks'
-                          : 'Esai Rubrik Otomatis'}
+                          ? 'Pilihan Ganda Kompleks (MCMA)'
+                          : item.type === 'pgk_kategori'
+                            ? 'PG Kompleks Kategori'
+                            : item.type === 'isian'
+                              ? 'Isian Singkat'
+                              : 'Uraian (Rubrik Otomatis)'}
                     </p>
                     <span className="text-sm font-bold font-mono tabular-nums text-slate-900 shrink-0">
                       {item.earnedPoints} / {item.maxPoints} poin

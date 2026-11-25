@@ -35,18 +35,18 @@ export interface DatabaseSchema {
 }
 
 export const DEFAULT_SITE_SETTINGS: SiteSettings = {
-  appName: 'AISA',
+  appName: 'TUNTAS',
   schoolName: "MI Ma'arif Al Ihsan Soborejo",
-  tagline: 'Al Ihsan Smart Asesment · Tahun Pelajaran 2026/2027',
-  eyebrowText: 'Al Ihsan Smart Asesment · Literasi & Numerasi',
+  tagline: 'TUNTAS Smart Assesment Platform · Tahun Pelajaran 2026/2027',
+  eyebrowText: 'Tata Kelola Ujian dan Nilai Terpadu untuk Asesmen Siswa',
   heroTitle: 'Ujian Madrasah yang Jujur, Terukur, dan Terintegrasi',
   heroSubtitle:
-    'Platform evaluasi digital AISA untuk Asesmen Sumatif Akhir Semester, Asesmen Tengah Semester, serta Try Out Literasi dan Numerasi dengan dukungan lampiran gambar, video, keamanan anti-kecurangan, dan database nilai instan.',
-  loginHeading: 'Masuk ke Al Ihsan Smart Asesment',
+    'TUNTAS Smart Assesment Platform (Tata Kelola Ujian dan Nilai Terpadu untuk Asesmen Siswa) untuk Asesmen Sumatif Akhir Semester, Asesmen Tengah Semester, serta Try Out Literasi dan Numerasi dengan dukungan lampiran gambar, video, keamanan anti-kecurangan, dan database nilai instan.',
+  loginHeading: 'Masuk ke TUNTAS Smart Assesment Platform',
   logoUrl: '/src/assets/images/aisa_madrasah_logo_1795493183530.jpg',
   backgroundImageUrl: '/src/assets/images/madrasah_campus_hero_1794802017792.jpg',
   showQuickDemo: false,
-  updatedAt: '2026-11-23T00:00:00.000Z',
+  updatedAt: '2026-11-24T18:35:00.000Z',
 };
 
 const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
@@ -1500,6 +1500,40 @@ export async function removeDriveAsset(id: string): Promise<void> {
   }
 }
 
+function upgradeLegacySiteSettings(settings: SiteSettings): {
+  settings: SiteSettings;
+  changed: boolean;
+} {
+  let changed = false;
+  const next: SiteSettings = { ...settings };
+
+  if (next.appName.trim().toUpperCase() === 'AISA') {
+    next.appName = DEFAULT_SITE_SETTINGS.appName;
+    changed = true;
+  }
+  if (/Al Ihsan Smart Asesment/i.test(next.tagline)) {
+    next.tagline = DEFAULT_SITE_SETTINGS.tagline;
+    changed = true;
+  }
+  if (/Al Ihsan Smart Asesment/i.test(next.eyebrowText)) {
+    next.eyebrowText = DEFAULT_SITE_SETTINGS.eyebrowText;
+    changed = true;
+  }
+  if (/evaluasi digital AISA/i.test(next.heroSubtitle)) {
+    next.heroSubtitle = DEFAULT_SITE_SETTINGS.heroSubtitle;
+    changed = true;
+  }
+  if (/Al Ihsan Smart Asesment/i.test(next.loginHeading)) {
+    next.loginHeading = DEFAULT_SITE_SETTINGS.loginHeading;
+    changed = true;
+  }
+
+  if (changed) {
+    next.updatedAt = new Date().toISOString();
+  }
+  return { settings: next, changed };
+}
+
 export async function getSiteSettings(): Promise<SiteSettings> {
   if (cachedSettings && isCacheFresh(cachedSettingsAt, SETTINGS_CACHE_TTL_MS)) {
     return cachedSettings;
@@ -1519,7 +1553,7 @@ export async function getSiteSettings(): Promise<SiteSettings> {
           .eq('id', 'default')
           .maybeSingle();
         if (!error && data) {
-          const resolved: SiteSettings = {
+          const rawResolved: SiteSettings = {
             appName: data.app_name || DEFAULT_SITE_SETTINGS.appName,
             schoolName: data.school_name || DEFAULT_SITE_SETTINGS.schoolName,
             tagline: data.tagline || DEFAULT_SITE_SETTINGS.tagline,
@@ -1533,6 +1567,10 @@ export async function getSiteSettings(): Promise<SiteSettings> {
             showQuickDemo: false,
             updatedAt: data.updated_at || local.siteSettings.updatedAt,
           };
+          const { settings: resolved, changed } = upgradeLegacySiteSettings(rawResolved);
+          if (changed) {
+            await saveSiteSettings(resolved);
+          }
           cachedSettings = resolved;
           cachedSettingsAt = Date.now();
           return resolved;
@@ -1541,7 +1579,12 @@ export async function getSiteSettings(): Promise<SiteSettings> {
         // Fall back silently to local store if site_settings table doesn't exist yet
       }
     }
-    const fallback = local.siteSettings || { ...DEFAULT_SITE_SETTINGS };
+    const rawFallback = local.siteSettings || { ...DEFAULT_SITE_SETTINGS };
+    const { settings: fallback, changed } = upgradeLegacySiteSettings(rawFallback);
+    if (changed) {
+      local.siteSettings = fallback;
+      saveLocalStore(local);
+    }
     cachedSettings = fallback;
     cachedSettingsAt = Date.now();
     return fallback;

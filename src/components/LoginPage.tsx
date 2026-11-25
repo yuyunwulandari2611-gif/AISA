@@ -8,14 +8,14 @@ interface LoginPageProps {
 }
 
 const FALLBACK_SETTINGS: SiteSettings = {
-  appName: 'AISA',
+  appName: 'TUNTAS',
   schoolName: "MI Ma'arif Al Ihsan Soborejo",
-  tagline: 'Al Ihsan Smart Asesment · Tahun Pelajaran 2026/2027',
-  eyebrowText: 'Al Ihsan Smart Asesment · Literasi & Numerasi',
+  tagline: 'TUNTAS Smart Assesment Platform · Tahun Pelajaran 2026/2027',
+  eyebrowText: 'Tata Kelola Ujian dan Nilai Terpadu untuk Asesmen Siswa',
   heroTitle: 'Ujian Madrasah yang Jujur, Terukur, dan Terintegrasi',
   heroSubtitle:
-    'Platform evaluasi digital AISA untuk Asesmen Sumatif Akhir Semester, Asesmen Tengah Semester, serta Try Out Literasi dan Numerasi dengan dukungan lampiran gambar, video, keamanan anti-kecurangan, dan database nilai instan.',
-  loginHeading: 'Masuk ke Al Ihsan Smart Asesment',
+    'TUNTAS Smart Assesment Platform (Tata Kelola Ujian dan Nilai Terpadu untuk Asesmen Siswa) untuk Asesmen Sumatif Akhir Semester, Asesmen Tengah Semester, serta Try Out Literasi dan Numerasi dengan dukungan lampiran gambar, video, keamanan anti-kecurangan, dan database nilai instan.',
+  loginHeading: 'Masuk ke TUNTAS Smart Assesment Platform',
   logoUrl: '/src/assets/images/aisa_madrasah_logo_1795493183530.jpg',
   backgroundImageUrl: '/src/assets/images/madrasah_campus_hero_1794802017792.jpg',
   showQuickDemo: false,

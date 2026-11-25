@@ -1050,7 +1050,7 @@ export function createApiApp(): express.Express {
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader(
           'Content-Disposition',
-          'attachment; filename="Template_Bank_Soal_AISA.csv"'
+          'attachment; filename="Template_Bank_Soal_TUNTAS.csv"'
         );
         return res.send(csv);
       }
@@ -1059,7 +1059,7 @@ export function createApiApp(): express.Express {
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         res.setHeader(
           'Content-Disposition',
-          'attachment; filename="Template_Bank_Soal_AISA.txt"'
+          'attachment; filename="Template_Bank_Soal_TUNTAS.txt"'
         );
         return res.send(txt);
       }
@@ -1070,7 +1070,7 @@ export function createApiApp(): express.Express {
       );
       res.setHeader(
         'Content-Disposition',
-        'attachment; filename="Template_Bank_Soal_AISA.xlsx"'
+        'attachment; filename="Template_Bank_Soal_TUNTAS.xlsx"'
       );
       return res.send(buf);
     } catch (err) {
@@ -1848,7 +1848,7 @@ export function createApiApp(): express.Express {
         );
 
         const csvContent = [header, ...rows].join('\n');
-        const fileName = `Rekap_Nilai_CBT_Al_Ihsan_${new Date().toISOString().slice(0, 10)}.csv`;
+        const fileName = `Rekap_Nilai_CBT_TUNTAS_${new Date().toISOString().slice(0, 10)}.csv`;
 
         const gasCfg = await getGasConfig();
         const gasUrl = gasCfg.webappUrl;

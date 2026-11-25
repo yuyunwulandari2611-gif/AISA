@@ -447,7 +447,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `Database_Nilai_CBT_Al_Ihsan_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `Database_Nilai_TUNTAS_${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -809,10 +809,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <p className="text-xs font-semibold text-emerald-700">
             {isAdmin ? 'Portal Administrator' : 'Portal Guru Pengampu'}
           </p>
-          <h1 className="text-base font-bold text-slate-900 mt-1 tracking-tight">
-            AISA · MI Ma&apos;arif Al Ihsan
+          <h1 className="text-base font-bold text-slate-900 mt-1 tracking-tight leading-snug">
+            {siteSettings?.appName || 'TUNTAS'} Smart Assesment Platform
           </h1>
-          <p className="text-xs text-slate-500 mt-1 truncate">{user.name}</p>
+          <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+            {siteSettings?.schoolName || "MI Ma'arif Al Ihsan"}
+          </p>
+          <p className="text-xs font-medium text-slate-600 mt-1 truncate">{user.name}</p>
         </div>
 
         <nav className="p-3 flex-1 flex lg:flex-col gap-1 overflow-x-auto">

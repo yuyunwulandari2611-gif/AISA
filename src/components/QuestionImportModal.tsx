@@ -252,7 +252,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div className="space-y-1">
               <p className="text-xs font-bold text-slate-900">
-                Unduh Format Template Dokumen Resmi AISA
+                Unduh Format Template Dokumen Resmi TUNTAS
               </p>
               <p className="text-xs text-slate-600">
                 Mendukung seluruh 5 tipe soal (<strong>PG, PGK MCMA, PGK Kategori, Isian Singkat, Uraian</strong>)
@@ -264,7 +264,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
             <div className="flex flex-wrap items-center gap-2 shrink-0">
               <a
                 href="/api/questions/import-template?format=xlsx"
-                download="Template_Bank_Soal_AISA.xlsx"
+                download="Template_Bank_Soal_TUNTAS.xlsx"
                 className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
@@ -272,7 +272,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
               </a>
               <a
                 href="/api/questions/import-template?format=txt"
-                download="Template_Bank_Soal_AISA.txt"
+                download="Template_Bank_Soal_TUNTAS.txt"
                 className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5"
               >
                 <FileText className="w-3.5 h-3.5 text-slate-700" />
@@ -280,7 +280,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
               </a>
               <a
                 href="/api/questions/import-template?format=csv"
-                download="Template_Bank_Soal_AISA.csv"
+                download="Template_Bank_Soal_TUNTAS.csv"
                 className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5"
               >
                 <Download className="w-3.5 h-3.5 text-slate-700" />

@@ -41,6 +41,12 @@ export default function App() {
     fetchSiteSettings();
   }, []);
 
+  useEffect(() => {
+    if (siteSettings?.appName) {
+      document.title = `${siteSettings.appName} Smart Assesment Platform`;
+    }
+  }, [siteSettings?.appName]);
+
   const handleLoginSuccess = (loggedInUser: SessionUser, token: string) => {
     setAuthToken(token);
     setUser(loggedInUser);
@@ -127,6 +133,7 @@ export default function App() {
   return (
     <StudentDashboard
       user={user}
+      siteSettings={siteSettings}
       onLogout={handleLogout}
       onStartExam={handleStartExam}
       onViewResult={handleViewResult}

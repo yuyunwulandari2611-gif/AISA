@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowRight, BookOpen, CheckCircle2, Clock, KeyRound, LogOut, ShieldAlert, X } from 'lucide-react';
-import type { Assessment, SafeQuestion, SessionUser, SubmissionRecord } from '../types/cbt.ts';
+import type { Assessment, SafeQuestion, SessionUser, SiteSettings, SubmissionRecord } from '../types/cbt.ts';
 import { authFetch } from '../lib/authClient.ts';
 
 interface EnrichedAssessment extends Omit<Assessment, 'token'> {
@@ -11,6 +11,7 @@ interface EnrichedAssessment extends Omit<Assessment, 'token'> {
 
 interface StudentDashboardProps {
   user: SessionUser;
+  siteSettings?: SiteSettings | null;
   onLogout: () => void;
   onStartExam: (assessment: Assessment, questions: SafeQuestion[], startedAt: string) => void;
   onViewResult: (submission: SubmissionRecord) => void;
@@ -18,6 +19,7 @@ interface StudentDashboardProps {
 
 export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   user,
+  siteSettings,
   onLogout,
   onStartExam,
   onViewResult,
@@ -111,7 +113,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between gap-8">
           <span className="text-base font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
-            AISA
+            {siteSettings?.appName || 'TUNTAS'} Smart Assesment
           </span>
 
           <nav className="flex items-center gap-6">
@@ -161,7 +163,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               {user.name}
             </h1>
             <p className="text-sm text-slate-600 mt-1 font-mono tabular-nums">
-              NISN {user.identifier} · {user.className} · MI Ma&apos;arif Al Ihsan Soborejo
+              NISN {user.identifier} · {user.className} ·{' '}
+              {siteSettings?.schoolName || "MI Ma'arif Al Ihsan Soborejo"}
             </p>
           </div>
           <div className="flex items-center gap-8 border-t md:border-t-0 pt-4 md:pt-0 border-slate-100">

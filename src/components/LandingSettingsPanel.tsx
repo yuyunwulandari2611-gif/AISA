@@ -134,7 +134,7 @@ export const LandingSettingsPanel: React.FC<LandingSettingsPanelProps> = ({
         onSaved(data.settings);
         setFeedback({
           kind: 'ok',
-          text: 'Tampilan halaman awal dikembalikan ke pengaturan bawaan AISA.',
+          text: 'Tampilan halaman awal dikembalikan ke pengaturan bawaan TUNTAS.',
         });
       }
     } finally {
@@ -150,7 +150,7 @@ export const LandingSettingsPanel: React.FC<LandingSettingsPanelProps> = ({
         </h2>
         <p className="text-xs text-slate-600 mt-1">
           Sesuaikan logo aplikasi/madrasah, gambar latar halaman depan, judul sambutan, serta
-          identitas pada gerbang masuk AISA.
+          identitas pada gerbang masuk TUNTAS Smart Assesment Platform.
         </p>
       </div>
 
@@ -210,8 +210,8 @@ export const LandingSettingsPanel: React.FC<LandingSettingsPanelProps> = ({
                   />
                 ) : (
                   <div className="text-center">
-                    <div className="w-10 h-10 rounded-lg bg-emerald-700 text-white font-bold text-xs flex items-center justify-center mx-auto">
-                      {(draft.appName || 'AISA').slice(0, 6)}
+                    <div className="w-10 h-10 rounded-lg bg-emerald-700 text-white font-bold text-[10px] flex items-center justify-center mx-auto">
+                      {(draft.appName || 'TUNTAS').slice(0, 6)}
                     </div>
                     <p className="text-[11px] text-slate-500 mt-1">Menggunakan inisial teks</p>
                   </div>
@@ -521,8 +521,8 @@ export const LandingSettingsPanel: React.FC<LandingSettingsPanelProps> = ({
                     />
                   </div>
                 ) : (
-                  <div className="w-11 h-11 rounded-lg bg-emerald-700 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
-                    {(draft.appName || 'AISA').slice(0, 5)}
+                  <div className="w-11 h-11 rounded-lg bg-emerald-700 text-white text-[9px] font-bold flex items-center justify-center shrink-0">
+                    {(draft.appName || 'TUNTAS').slice(0, 6)}
                   </div>
                 )}
                 <div className="min-w-0">
@@ -556,8 +556,8 @@ export const LandingSettingsPanel: React.FC<LandingSettingsPanelProps> = ({
                   />
                 </div>
               ) : (
-                <div className="w-12 h-12 rounded-lg bg-emerald-700 text-white text-[10px] font-bold mx-auto flex items-center justify-center">
-                  {(draft.appName || 'AISA').slice(0, 5)}
+                <div className="w-12 h-12 rounded-lg bg-emerald-700 text-white text-[9px] font-bold mx-auto flex items-center justify-center">
+                  {(draft.appName || 'TUNTAS').slice(0, 6)}
                 </div>
               )}
               <p className="text-[9px] font-semibold text-emerald-700">

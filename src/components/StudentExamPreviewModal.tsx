@@ -17,6 +17,13 @@ import type {
   Question,
   StudentAnswerPayload,
 } from '../types/cbt.ts';
+import {
+  BidiParagraphs,
+  formatContextualNumber,
+  getBidiInputClass,
+  getBidiInputDirection,
+  isPureArabicParagraph,
+} from './BidiText.tsx';
 
 interface StudentExamPreviewModalProps {
   assessment: Assessment;
@@ -271,15 +278,11 @@ export const StudentExamPreviewModal: React.FC<StudentExamPreviewModalProps> = (
             </div>
 
             {currentQuestion.stimulusTitle && (
-              <h2 className="text-xl font-bold text-slate-900 tracking-tight">
-                {currentQuestion.stimulusTitle}
-              </h2>
+              <BidiParagraphs text={currentQuestion.stimulusTitle} variant="title" />
             )}
 
             {currentQuestion.stimulusPassage && (
-              <div className="font-serif text-base text-slate-800 leading-relaxed whitespace-pre-line">
-                {currentQuestion.stimulusPassage}
-              </div>
+              <BidiParagraphs text={currentQuestion.stimulusPassage} variant="passage" />
             )}
 
             {/* Video Attachment */}
@@ -371,9 +374,7 @@ export const StudentExamPreviewModal: React.FC<StudentExamPreviewModalProps> = (
                           ? 'Isian Singkat — Tuliskan jawaban singkat yang tepat'
                           : 'Soal Uraian — Tuliskan jawaban lengkap dan terstruktur'}
                 </p>
-                <p className="text-base font-semibold text-slate-900 leading-relaxed">
-                  {currentQuestion.prompt}
-                </p>
+                <BidiParagraphs text={currentQuestion.prompt} variant="prompt" />
               </div>
 
               {/* Pilihan Ganda (PG) */}
@@ -396,7 +397,7 @@ export const StudentExamPreviewModal: React.FC<StudentExamPreviewModalProps> = (
                         }`}
                       >
                         <span
-                          className={`w-7 h-7 rounded-md text-xs font-bold font-mono flex items-center justify-center shrink-0 ${
+                          className={`w-7 h-7 rounded-md text-xs font-bold font-mono flex items-center justify-center shrink-0 mt-0.5 ${
                             selected
                               ? 'bg-emerald-700 text-white'
                               : isKey
@@ -404,10 +405,10 @@ export const StudentExamPreviewModal: React.FC<StudentExamPreviewModalProps> = (
                                 : 'bg-slate-100 text-slate-700'
                           }`}
                         >
-                          {opt.label}
+                          {formatContextualNumber(opt.label, opt.text || '')}
                         </span>
                         <div className="flex-1 min-w-0 space-y-2 pt-0.5">
-                          {opt.text && <span className="text-sm leading-relaxed block">{opt.text}</span>}
+                          {opt.text && <BidiParagraphs text={opt.text} variant="option" />}
                           {opt.imageUrl && (
                             <img
                               src={opt.imageUrl}
@@ -459,10 +460,14 @@ export const StudentExamPreviewModal: React.FC<StudentExamPreviewModalProps> = (
                           {checked && <Check className="w-3.5 h-3.5" />}
                         </span>
                         <div className="flex-1 min-w-0 space-y-2">
-                          <span className="text-sm leading-relaxed block">
-                            <strong className="font-mono mr-1.5">{opt.label}.</strong>
-                            {opt.text}
-                          </span>
+                          <div className="flex items-start gap-2">
+                            <span className="font-mono text-xs font-bold text-slate-600 shrink-0 pt-1">
+                              {formatContextualNumber(opt.label, opt.text || '')}.
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              {opt.text && <BidiParagraphs text={opt.text} variant="option" />}
+                            </div>
+                          </div>
                           {opt.imageUrl && (
                             <img
                               src={opt.imageUrl}
@@ -510,11 +515,26 @@ export const StudentExamPreviewModal: React.FC<StudentExamPreviewModalProps> = (
                             const expectedSide = keyEntry?.split(':')[1] === 'B' ? 'B' : 'A';
                             return (
                               <tr key={opt.id} className="bg-white hover:bg-slate-50/70">
-                                <td className="py-3 px-3 align-top text-slate-800 leading-relaxed">
-                                  <span className="font-mono text-xs font-semibold text-slate-500 mr-1.5">
-                                    {idx + 1}.
-                                  </span>
-                                  <span>{opt.text}</span>
+                                <td className="py-3 px-3 align-top text-slate-800">
+                                  {isPureArabicParagraph(opt.text) ? (
+                                    <div dir="rtl" className="flex items-start gap-2 text-right">
+                                      <span className="font-arabic text-base font-bold text-slate-600 shrink-0 pt-0.5">
+                                        {formatContextualNumber(idx + 1, opt.text)}.
+                                      </span>
+                                      <div className="flex-1 min-w-0">
+                                        <BidiParagraphs text={opt.text} variant="option" />
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div dir="ltr" className="flex items-start gap-2 text-left">
+                                      <span className="font-mono text-xs font-semibold text-slate-500 shrink-0 pt-1">
+                                        {idx + 1}.
+                                      </span>
+                                      <div className="flex-1 min-w-0">
+                                        <BidiParagraphs text={opt.text} variant="option" />
+                                      </div>
+                                    </div>
+                                  )}
                                   {opt.imageUrl && (
                                     <img
                                       src={opt.imageUrl}
@@ -583,21 +603,30 @@ export const StudentExamPreviewModal: React.FC<StudentExamPreviewModalProps> = (
                 <div className="space-y-2">
                   <input
                     type="text"
+                    dir={getBidiInputDirection(currentAnswer?.shortAnswerText || '')}
                     value={currentAnswer?.shortAnswerText || ''}
                     onChange={(e) => handleShortAnswerChange(currentQuestion.id, e.target.value)}
                     placeholder="Ketik jawaban singkat Anda di sini..."
-                    className="w-full px-4 py-3 text-base font-medium text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
+                    className={`w-full px-4 py-3 text-base font-medium text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700 ${getBidiInputClass(
+                      currentAnswer?.shortAnswerText || ''
+                    )}`}
                   />
                   <p className="text-xs text-slate-500">
                     Tuliskan jawaban singkat dengan tepat (angka atau kata/frasa singkat tanpa spasi
                     berlebih).
                   </p>
                   {showAnswerKey && (
-                    <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 font-mono">
-                      Kunci:{' '}
-                      {(currentQuestion.essayKeywords && currentQuestion.essayKeywords.length > 0
-                        ? currentQuestion.essayKeywords.join(', ')
-                        : currentQuestion.essaySampleAnswer) || '-'}
+                    <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 space-y-1">
+                      <span className="font-semibold block">Kunci Jawaban:</span>
+                      <BidiParagraphs
+                        text={
+                          (currentQuestion.essayKeywords &&
+                          currentQuestion.essayKeywords.length > 0
+                            ? currentQuestion.essayKeywords.join(', ')
+                            : currentQuestion.essaySampleAnswer) || '-'
+                        }
+                        variant="compact"
+                      />
                     </div>
                   )}
                 </div>
@@ -608,10 +637,13 @@ export const StudentExamPreviewModal: React.FC<StudentExamPreviewModalProps> = (
                 <div className="space-y-2">
                   <textarea
                     rows={6}
+                    dir={getBidiInputDirection(currentAnswer?.essayText || '')}
                     value={currentAnswer?.essayText || ''}
                     onChange={(e) => handleEssayChange(currentQuestion.id, e.target.value)}
                     placeholder="Tuliskan jawaban uraian Anda di sini secara jelas dan runtut..."
-                    className="w-full p-3.5 text-sm text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700 leading-relaxed"
+                    className={`w-full p-3.5 text-sm text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700 leading-relaxed ${getBidiInputClass(
+                      currentAnswer?.essayText || ''
+                    )}`}
                   />
                   <div className="flex items-center justify-between text-xs text-slate-500 font-mono tabular-nums">
                     <span>Penilaian otomatis berbasis rubrik konsep kunci</span>
@@ -621,16 +653,24 @@ export const StudentExamPreviewModal: React.FC<StudentExamPreviewModalProps> = (
                     </span>
                   </div>
                   {showAnswerKey && (
-                    <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 space-y-1">
+                    <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 space-y-1.5">
                       {currentQuestion.essayKeywords && currentQuestion.essayKeywords.length > 0 && (
-                        <p className="font-mono">
-                          <strong>Kata Kunci:</strong> {currentQuestion.essayKeywords.join(', ')}
-                        </p>
+                        <div>
+                          <strong className="block mb-0.5">Kata Kunci:</strong>
+                          <BidiParagraphs
+                            text={currentQuestion.essayKeywords.join(', ')}
+                            variant="caption"
+                          />
+                        </div>
                       )}
                       {currentQuestion.essaySampleAnswer && (
-                        <p>
-                          <strong>Referensi Ideal:</strong> {currentQuestion.essaySampleAnswer}
-                        </p>
+                        <div>
+                          <strong className="block mb-0.5">Referensi Ideal:</strong>
+                          <BidiParagraphs
+                            text={currentQuestion.essaySampleAnswer}
+                            variant="caption"
+                          />
+                        </div>
                       )}
                     </div>
                   )}

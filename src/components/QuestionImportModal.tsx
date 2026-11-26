@@ -12,6 +12,11 @@ import {
 } from 'lucide-react';
 import type { DriveAsset, Question, QuestionType } from '../types/cbt.ts';
 import { authFetch } from '../lib/authClient.ts';
+import {
+  BidiParagraphs,
+  formatContextualNumber,
+  isPureArabicParagraph,
+} from './BidiText.tsx';
 
 interface ParsedQuestionDraft {
   tempId: string;
@@ -487,10 +492,12 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
                           </div>
 
                           {q.stimulusPassage && (
-                            <p className="text-xs text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-100 line-clamp-3 font-serif">
-                              {q.stimulusTitle ? `${q.stimulusTitle}: ` : ''}
-                              {q.stimulusPassage}
-                            </p>
+                            <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-100 space-y-1">
+                              {q.stimulusTitle && (
+                                <BidiParagraphs text={q.stimulusTitle} variant="compact" />
+                              )}
+                              <BidiParagraphs text={q.stimulusPassage} variant="caption" />
+                            </div>
                           )}
 
                           {q.imageUrl && (
@@ -506,7 +513,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
                             </div>
                           )}
 
-                          <p className="text-sm font-medium text-slate-900">{q.prompt}</p>
+                          <BidiParagraphs text={q.prompt} variant="compact" />
 
                           {(q.type === 'pg' || q.type === 'pgk') && (
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs">
@@ -518,15 +525,19 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
                                 return (
                                   <div
                                     key={opt.id}
-                                    className={`px-2.5 py-1.5 rounded border ${
+                                    className={`px-2.5 py-1.5 rounded border flex items-start gap-2 ${
                                       isKey
                                         ? 'bg-emerald-50 border-emerald-300 text-emerald-900 font-semibold'
                                         : 'bg-slate-50 border-slate-200 text-slate-700'
                                     }`}
                                   >
-                                    <span className="font-mono mr-1.5">{opt.label}.</span>
-                                    <span>{opt.text}</span>
-                                    {isKey && <span className="ml-1.5 text-emerald-700">✓</span>}
+                                    <span className="font-mono shrink-0 pt-0.5">
+                                      {formatContextualNumber(opt.label, opt.text || '')}.
+                                    </span>
+                                    <div className="flex-1 min-w-0">
+                                      <BidiParagraphs text={opt.text} variant="caption" />
+                                    </div>
+                                    {isKey && <span className="text-emerald-700 shrink-0">✓</span>}
                                   </div>
                                 );
                               })}
@@ -546,16 +557,32 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
                                     k.startsWith(`${opt.id}:`)
                                   );
                                   const side = entry?.split(':')[1] === 'B' ? 'B' : 'A';
+                                  const pureAr = isPureArabicParagraph(opt.text);
                                   return (
                                     <div
                                       key={opt.id}
                                       className="grid grid-cols-12 items-center px-3 py-1.5 bg-white gap-2"
                                     >
                                       <div className="col-span-8 text-slate-800">
-                                        <span className="font-mono text-slate-500 mr-1.5">
-                                          {idx + 1}.
-                                        </span>
-                                        {opt.text}
+                                        {pureAr ? (
+                                          <div dir="rtl" className="flex items-start gap-1.5 text-right">
+                                            <span className="font-arabic font-semibold text-slate-500 shrink-0">
+                                              {formatContextualNumber(idx + 1, opt.text)}.
+                                            </span>
+                                            <div className="flex-1 min-w-0">
+                                              <BidiParagraphs text={opt.text} variant="caption" />
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <div dir="ltr" className="flex items-start gap-1.5 text-left">
+                                            <span className="font-mono text-slate-500 shrink-0">
+                                              {idx + 1}.
+                                            </span>
+                                            <div className="flex-1 min-w-0">
+                                              <BidiParagraphs text={opt.text} variant="caption" />
+                                            </div>
+                                          </div>
+                                        )}
                                       </div>
                                       <div className="col-span-4 text-right">
                                         <span
@@ -576,27 +603,35 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
                           )}
 
                           {q.type === 'isian' && (
-                            <div className="text-xs text-slate-600 space-y-1">
-                              <p className="font-mono text-emerald-700">
-                                Kunci isian singkat:{' '}
-                                {(q.essayKeywords && q.essayKeywords.length > 0
-                                  ? q.essayKeywords.join(', ')
-                                  : q.essaySampleAnswer) || '-'}
-                              </p>
+                            <div className="text-xs text-emerald-700 flex flex-wrap items-baseline gap-1.5">
+                              <span className="font-mono shrink-0">Kunci isian singkat:</span>
+                              <BidiParagraphs
+                                text={
+                                  (q.essayKeywords && q.essayKeywords.length > 0
+                                    ? q.essayKeywords.join(', ')
+                                    : q.essaySampleAnswer) || '-'
+                                }
+                                variant="caption"
+                              />
                             </div>
                           )}
 
                           {q.type === 'essay' && (
                             <div className="text-xs text-slate-600 space-y-1">
                               {q.essayKeywords && q.essayKeywords.length > 0 && (
-                                <p className="font-mono text-emerald-700">
-                                  Kata kunci rubrik: {q.essayKeywords.join(', ')}
-                                </p>
+                                <div className="text-emerald-700 flex flex-wrap items-baseline gap-1.5">
+                                  <span className="font-mono shrink-0">Kata kunci rubrik:</span>
+                                  <BidiParagraphs
+                                    text={q.essayKeywords.join(', ')}
+                                    variant="caption"
+                                  />
+                                </div>
                               )}
                               {q.essaySampleAnswer && (
-                                <p className="text-slate-500">
-                                  Referensi: {q.essaySampleAnswer}
-                                </p>
+                                <div className="text-slate-500 space-y-0.5">
+                                  <span className="block">Referensi:</span>
+                                  <BidiParagraphs text={q.essaySampleAnswer} variant="caption" />
+                                </div>
                               )}
                             </div>
                           )}

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ArrowLeft, CheckCircle2, ShieldAlert, ShieldCheck } from 'lucide-react';
 import type { SubmissionRecord } from '../types/cbt.ts';
 import { authFetch } from '../lib/authClient.ts';
+import { BidiParagraphs } from './BidiText.tsx';
 
 interface ExamResultViewProps {
   submission: SubmissionRecord;
@@ -185,12 +186,12 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                       {item.earnedPoints} / {item.maxPoints} poin
                     </span>
                   </div>
-                  <p className="text-sm font-medium text-slate-900">{item.prompt}</p>
-                  <p className="text-xs text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-200">
-                    <strong className="text-slate-900">Jawaban Anda:</strong>{' '}
-                    {item.studentAnswerText}
-                  </p>
-                  <p className="text-xs text-slate-600">{item.feedback}</p>
+                  <BidiParagraphs text={item.prompt} variant="compact" />
+                  <div className="text-xs text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-1">
+                    <strong className="text-slate-900 block">Jawaban Anda:</strong>
+                    <BidiParagraphs text={item.studentAnswerText} variant="compact" />
+                  </div>
+                  <BidiParagraphs text={item.feedback} variant="caption" className="text-slate-600" />
                   {item.type === 'essay' && item.matchedKeywords.length > 0 && (
                     <p className="text-xs text-emerald-700">
                       Konsep kunci terpenuhi: {item.matchedKeywords.join(', ')}

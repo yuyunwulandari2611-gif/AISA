@@ -14,7 +14,10 @@ function normalizeText(input: string): string {
 }
 
 function normalizeShortAnswer(input: string): string {
-  const collapsed = input
+  const withAsciiDigits = input
+    .replace(/[\u0660-\u0669]/g, (ch) => String(ch.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (ch) => String(ch.charCodeAt(0) - 0x06f0));
+  const collapsed = withAsciiDigits
     .toLowerCase()
     .replace(/\s+/g, ' ')
     .trim()

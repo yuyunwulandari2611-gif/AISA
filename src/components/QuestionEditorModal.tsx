@@ -18,6 +18,11 @@ import type {
   QuestionType,
 } from '../types/cbt.ts';
 import { authFetch } from '../lib/authClient.ts';
+import {
+  formatContextualNumber,
+  getBidiInputClass,
+  getBidiInputDirection,
+} from './BidiText.tsx';
 
 interface QuestionEditorModalProps {
   assessmentId: string;
@@ -659,6 +664,7 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
             <textarea
               rows={3}
               required={!imageUrl.trim()}
+              dir={getBidiInputDirection(prompt)}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder={
@@ -666,7 +672,9 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
                   ? 'Boleh dikosongkan jika seluruh soal sudah tertera pada gambar di atas, atau tulis perintah singkat...'
                   : 'Tuliskan pokok pertanyaan yang harus dijawab peserta ujian...'
               }
-              className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+              className={`w-full px-3 py-2 text-sm border border-slate-300 rounded-lg ${getBidiInputClass(
+                prompt
+              )}`}
             />
           </div>
 
@@ -678,10 +686,13 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
               </label>
               <input
                 type="text"
+                dir={getBidiInputDirection(stimulusTitle)}
                 value={stimulusTitle}
                 onChange={(e) => setStimulusTitle(e.target.value)}
                 placeholder="Contoh: Ekosistem Sawah Soborejo"
-                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                className={`w-full px-3 py-2 text-sm border border-slate-300 rounded-lg ${getBidiInputClass(
+                  stimulusTitle
+                )}`}
               />
             </div>
             <div className="md:col-span-8">
@@ -690,10 +701,13 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
               </label>
               <textarea
                 rows={2}
+                dir={getBidiInputDirection(stimulusPassage)}
                 value={stimulusPassage}
                 onChange={(e) => setStimulusPassage(e.target.value)}
                 placeholder="Tuliskan bacaan, data cerita, atau konteks masalah jika diperlukan..."
-                className="w-full px-3 py-2 text-sm font-serif border border-slate-300 rounded-lg"
+                className={`w-full px-3 py-2 text-sm font-serif border border-slate-300 rounded-lg ${getBidiInputClass(
+                  stimulusPassage
+                )}`}
               />
             </div>
           </div>
@@ -760,6 +774,7 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
                       </button>
                       <input
                         type="text"
+                        dir={getBidiInputDirection(opt.text)}
                         value={opt.text}
                         onChange={(e) => {
                           const val = e.target.value;
@@ -768,7 +783,9 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
                           );
                         }}
                         placeholder={`Teks pilihan ${opt.label} (opsional jika memakai gambar)`}
-                        className="flex-1 px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg"
+                        className={`flex-1 px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg ${getBidiInputClass(
+                          opt.text
+                        )}`}
                       />
                       <label
                         title={`Sisipkan gambar untuk opsi ${opt.label}`}
@@ -930,10 +947,11 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
                       className="flex flex-col sm:flex-row sm:items-center gap-2 p-2.5 rounded-lg bg-white border border-slate-200"
                     >
                       <span className="text-xs font-bold font-mono text-slate-500 w-6 shrink-0">
-                        {idx + 1}.
+                        {formatContextualNumber(idx + 1, opt.text)}.
                       </span>
                       <input
                         type="text"
+                        dir={getBidiInputDirection(opt.text)}
                         value={opt.text}
                         onChange={(e) => {
                           const val = e.target.value;
@@ -942,7 +960,9 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
                           );
                         }}
                         placeholder={`Tuliskan pernyataan ke-${idx + 1}...`}
-                        className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-lg"
+                        className={`flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-lg ${getBidiInputClass(
+                          opt.text
+                        )}`}
                       />
                       <div className="flex items-center gap-1.5 shrink-0">
                         <button
@@ -1002,10 +1022,13 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
                 </label>
                 <input
                   type="text"
+                  dir={getBidiInputDirection(essayKeywordsText)}
                   value={essayKeywordsText}
                   onChange={(e) => setEssayKeywordsText(e.target.value)}
                   placeholder="Contoh: 72 | tujuh puluh dua  atau  Jakarta | DKI Jakarta"
-                  className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                  className={`w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg ${getBidiInputClass(
+                    essayKeywordsText
+                  )}`}
                 />
               </div>
               <div>
@@ -1014,10 +1037,13 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
                 </label>
                 <input
                   type="text"
+                  dir={getBidiInputDirection(essaySampleAnswer)}
                   value={essaySampleAnswer}
                   onChange={(e) => setEssaySampleAnswer(e.target.value)}
                   placeholder="Contoh: 72"
-                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                  className={`w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg ${getBidiInputClass(
+                    essaySampleAnswer
+                  )}`}
                 />
               </div>
               <p className="text-[11px] text-slate-500">
@@ -1037,10 +1063,13 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
                 </label>
                 <input
                   type="text"
+                  dir={getBidiInputDirection(essayKeywordsText)}
                   value={essayKeywordsText}
                   onChange={(e) => setEssayKeywordsText(e.target.value)}
                   placeholder="Contoh: katak|kodok, meningkat|bertambah, bangau, keseimbangan|rantai makanan"
-                  className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                  className={`w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg ${getBidiInputClass(
+                    essayKeywordsText
+                  )}`}
                 />
               </div>
               <div>
@@ -1049,10 +1078,13 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
                 </label>
                 <textarea
                   rows={2}
+                  dir={getBidiInputDirection(essaySampleAnswer)}
                   value={essaySampleAnswer}
                   onChange={(e) => setEssaySampleAnswer(e.target.value)}
                   placeholder="Jawaban rujukan lengkap untuk pedoman kalibrasi guru..."
-                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                  className={`w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg ${getBidiInputClass(
+                    essaySampleAnswer
+                  )}`}
                 />
               </div>
             </div>

@@ -27,6 +27,7 @@ import { LandingSettingsPanel } from './LandingSettingsPanel.tsx';
 import { QuestionEditorModal } from './QuestionEditorModal.tsx';
 import { QuestionImportModal } from './QuestionImportModal.tsx';
 import { StudentExamPreviewModal } from './StudentExamPreviewModal.tsx';
+import { BidiParagraphs } from './BidiText.tsx';
 import { authFetch } from '../lib/authClient.ts';
 import type {
   AntiCheatLog,
@@ -1460,7 +1461,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 className="h-16 w-24 object-cover rounded-lg border border-slate-200 bg-slate-50 shrink-0"
                               />
                             )}
-                            <div className="space-y-1.5 min-w-0">
+                            <div className="space-y-1.5 min-w-0 flex-1">
                               <p className="text-xs text-slate-500 font-mono tabular-nums">
                                 No. {q.orderNumber} ·{' '}
                                 {q.type === 'pg'
@@ -1481,7 +1482,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 {q.options?.some((o) => Boolean(o.imageUrl)) ? ' · Opsi Bergambar' : ''}
                                 {q.videoUrl ? ' · Lampiran Video' : ''}
                               </p>
-                              <p className="text-sm font-medium text-slate-900">{q.prompt}</p>
+                              <BidiParagraphs text={q.prompt} variant="compact" />
                               <p className="text-xs text-slate-500">
                                 Penyusun: {q.authorName || selectedAssessmentObj.assignedTeacherName || 'Guru Pengampu'}
                               </p>
@@ -1504,17 +1505,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 </p>
                               )}
                               {q.type === 'isian' && (
-                                <p className="text-xs text-emerald-700 font-mono">
-                                  Kunci isian singkat:{' '}
-                                  {(q.essayKeywords && q.essayKeywords.length > 0
-                                    ? q.essayKeywords.join(', ')
-                                    : q.essaySampleAnswer) || '-'}
-                                </p>
+                                <div className="text-xs text-emerald-700 flex flex-wrap items-baseline gap-1.5">
+                                  <span className="font-mono shrink-0">Kunci isian singkat:</span>
+                                  <BidiParagraphs
+                                    text={
+                                      (q.essayKeywords && q.essayKeywords.length > 0
+                                        ? q.essayKeywords.join(', ')
+                                        : q.essaySampleAnswer) || '-'
+                                    }
+                                    variant="caption"
+                                  />
+                                </div>
                               )}
                               {q.type === 'essay' && q.essayKeywords && q.essayKeywords.length > 0 && (
-                                <p className="text-xs text-emerald-700 font-mono">
-                                  Kata kunci rubrik: {q.essayKeywords.join(', ')}
-                                </p>
+                                <div className="text-xs text-emerald-700 flex flex-wrap items-baseline gap-1.5">
+                                  <span className="font-mono shrink-0">Kata kunci rubrik:</span>
+                                  <BidiParagraphs
+                                    text={q.essayKeywords.join(', ')}
+                                    variant="caption"
+                                  />
+                                </div>
                               )}
                             </div>
                           </div>
@@ -2497,11 +2507,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </span>
                         </div>
                       </div>
-                      <p className="text-sm font-medium text-slate-900">{item.prompt}</p>
-                      <p className="text-xs text-slate-700 bg-slate-50 p-2.5 rounded-lg">
-                        <strong>Jawaban:</strong> {item.studentAnswerText}
-                      </p>
-                      <p className="text-xs text-slate-500">{item.feedback}</p>
+                      <BidiParagraphs text={item.prompt} variant="compact" />
+                      <div className="text-xs text-slate-700 bg-slate-50 p-2.5 rounded-lg space-y-1">
+                        <strong className="block text-slate-900">Jawaban:</strong>
+                        <BidiParagraphs text={item.studentAnswerText} variant="compact" />
+                      </div>
+                      <BidiParagraphs text={item.feedback} variant="caption" className="text-slate-500" />
                     </div>
                   ))
                 )}

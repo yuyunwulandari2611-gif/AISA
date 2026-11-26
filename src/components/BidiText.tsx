@@ -144,9 +144,9 @@ const VARIANT_CLASSES: Record<
 
 /**
  * Merender teks soal/wacana/opsi secara rapi per paragraf:
- * - Paragraf seluruhnya Arab -> dir="rtl", rata kanan, angka konteks Arab (٠-٩), font Noto Sans Arabic ukuran lebih besar & lega.
+ * - Paragraf seluruhnya Arab -> dir="rtl", rata kanan, angka konteks Arab (٠-٩), font Noto Naskh Arabic ukuran lebih besar & lega.
  * - Paragraf campuran Arab + Latin -> mempertahankan arah & penomoran paragraf aslinya (dir="ltr", rata kiri),
- *   namun fragmen Arab tetap memakai font Noto Sans Arabic yang lebih besar & terisolasi agar harakat jelas.
+ *   namun fragmen Arab tetap memakai font Noto Naskh Arabic yang lebih besar & terisolasi agar harakat jelas.
  * - Paragraf non-Arab -> mengikuti tipografi standar aplikasi.
  */
 export const BidiParagraphs: React.FC<BidiParagraphsProps> = ({

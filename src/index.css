@@ -1,10 +1,10 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Plus Jakarta Sans", "Noto Sans Arabic", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Source Serif 4", "Noto Sans Arabic", ui-serif, Georgia, Cambria, serif;
-  --font-mono: "JetBrains Mono", "Noto Sans Arabic", ui-monospace, SFMono-Regular, monospace;
-  --font-arabic: "Noto Sans Arabic", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", "Noto Naskh Arabic", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Source Serif 4", "Noto Naskh Arabic", ui-serif, Georgia, Cambria, serif;
+  --font-mono: "JetBrains Mono", "Noto Naskh Arabic", ui-monospace, SFMono-Regular, monospace;
+  --font-arabic: "Noto Naskh Arabic", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
 }
 
 @layer base {
